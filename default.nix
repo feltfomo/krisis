@@ -4,6 +4,23 @@ let
   diagnostics = import ./diagnostics.nix { inherit lib; };
 in
 {
-  inherit (safe) safeRender safeShape;
-  inherit (diagnostics) mkDiagnostic renderDiagnostics throwDiagnostics;
+  inherit (safe)
+    safeRender
+    safeRenderWith
+    safeShape
+    safeShapeWith
+    safeIdentity
+    ;
+  inherit (diagnostics)
+    allowedSeverities
+    qualifyCode
+    mkDiagnostic
+    mkDiagnosticFactory
+    renderDiagnostics
+    throwDiagnostics
+    mkReporter
+    collectDiagnostics
+    optionalDiagnostic
+    withErrorContext
+    ;
 }
