@@ -1,6 +1,6 @@
 { lib }:
 let
-  krisis = import ./default.nix { inherit lib; };
+  krisis = import ../default.nix { inherit lib; };
 
   throws = value: !(builtins.tryEval (builtins.deepSeq value value)).success;
 
