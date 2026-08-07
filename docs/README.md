@@ -21,6 +21,7 @@ krisis = import ./modules/_lib/krisis { inherit lib; };
 | `mkReporter` | Bind rendering and throwing policy once. |
 | `renderDiagnostics` | Render a list with caller-provided formatting. |
 | `throwDiagnostics` | Render and throw a list. |
+| `renderPlain` | Stock one-diagnostic code/label/message rendering with notes and help. |
 | `collectDiagnostics` | Flatten ordered diagnostic groups. |
 | `optionalDiagnostic` | Emit zero or one diagnostic from a condition. |
 | `withErrorContext` | Add context while preserving the original Nix exception. |
@@ -109,6 +110,8 @@ Reporter methods are:
 - `checked`, which returns a value only when the diagnostic list is empty.
 
 `formatHeader` defaults to no header. Returning `null` omits it. `separator` defaults to a newline.
+
+A subsystem without its own format can pass `renderPlain` as `formatDiagnostic`: it renders the code, optional primary label, and message on the first line, then notes and help indented beneath.
 
 Aggregate independent diagnostics before throwing when the remaining input can be inspected safely. Do not run later dependent phases after an earlier phase is invalid merely to increase the count. Ownerships, for example, may aggregate several declaration diagnostics but must not run selection or merge after declaration validation fails.
 

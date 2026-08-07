@@ -235,6 +235,24 @@ let
 
   throwDiagnostics = args: throw (renderDiagnostics args);
 
+  # stock one-diagnostic text for subsystems without their own format -- code,
+  # optional primary label, and message on the first line, notes and help
+  # indented beneath.
+  renderPlain =
+    diagnostic:
+    let
+      subject = diagnostic.primary.label or null;
+      head =
+        "[${diagnostic.code}]"
+        + lib.optionalString (subject != null) " ${subject}:"
+        + " ${diagnostic.message}";
+    in
+    lib.concatStringsSep "\n" (
+      [ head ]
+      ++ map (note: "    note: ${note}") (diagnostic.notes or [ ])
+      ++ lib.optional (diagnostic ? help) "    help: ${diagnostic.help}"
+    );
+
   mkReporter =
     {
       formatDiagnostic,
@@ -285,6 +303,7 @@ in
     mkDiagnosticFactory
     renderDiagnostics
     throwDiagnostics
+    renderPlain
     mkReporter
     collectDiagnostics
     optionalDiagnostic

@@ -18,6 +18,7 @@ in
     mkDiagnosticFactory
     renderDiagnostics
     throwDiagnostics
+    renderPlain
     mkReporter
     collectDiagnostics
     optionalDiagnostic

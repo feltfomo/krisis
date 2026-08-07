@@ -123,6 +123,20 @@ let
         && throws (reporter.failOne diagnostic);
     }
     {
+      name = "plain rendering shows label notes and help on indented lines";
+      pass =
+        krisis.renderPlain diagnostic
+        == "[test/problem] sample: something broke\n    note: first note\n    help: fix the sample"
+        &&
+          krisis.renderPlain (
+            krisis.mkDiagnostic {
+              severity = "warning";
+              code = "test/plain";
+              message = "bare";
+            }
+          ) == "[test/plain] bare";
+    }
+    {
       name = "collection helpers preserve order and conditional absence";
       pass =
         krisis.collectDiagnostics [
