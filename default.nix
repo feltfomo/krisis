@@ -3,11 +3,11 @@ let
   axiom = import ../axiom { inherit lib; };
   safe = import ./safe-render.nix {
     inherit lib;
-    inherit (axiom) identity;
+    inherit (axiom) identity validation schema;
   };
   diagnostics = import ./diagnostics.nix {
     inherit lib;
-    inherit (axiom) validation;
+    inherit (axiom) validation schema canonical;
   };
 in
 {

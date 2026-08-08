@@ -1,4 +1,9 @@
-{ lib, identity }:
+{
+  lib,
+  identity,
+  validation,
+  schema,
+}:
 let
   scalarTypes = [
     "bool"
@@ -11,35 +16,45 @@ let
 
   invalid =
     field: expected: value:
-    throw "krisis: ${field} must be ${expected}; got ${builtins.typeOf value}";
+    "${field} must be ${expected}; got ${builtins.typeOf value}";
 
-  validateOptions =
-    {
-      options,
-      allowed,
-      bounds ? [ ],
-      strings ? [ ],
-    }:
-    if !builtins.isAttrs options then
-      invalid "render options" "an attribute set" options
-    else
-      let
-        unknown = builtins.filter (name: !(builtins.elem name allowed)) (builtins.attrNames options);
-        badBound = lib.findFirst (
-          name: options ? ${name} && (!builtins.isInt options.${name} || options.${name} < 0)
-        ) null bounds;
-        badString = lib.findFirst (
-          name: options ? ${name} && !builtins.isString options.${name}
-        ) null strings;
-      in
-      if unknown != [ ] then
-        throw "krisis: unknown render options ${lib.concatStringsSep ", " unknown}"
-      else if badBound != null then
-        invalid "render option '${badBound}'" "a non-negative integer" options.${badBound}
-      else if badString != null then
-        invalid "render option '${badString}'" "a string" options.${badString}
-      else
-        true;
+  # malformed options are malformed direct use of krisis, so accumulated
+  # diagnostics end in one throw rather than a returned result
+  failKrisis = diagnostics: throw "krisis: ${lib.concatStringsSep "; " diagnostics}";
+
+  finish = validation.finish failKrisis;
+
+  boundField = name: default: {
+    inherit default;
+    validate = value: builtins.isInt value && value >= 0;
+    onInvalid = _record: value: invalid "render option '${name}'" "a non-negative integer" value;
+  };
+
+  renderOptions = schema.compile {
+    onRecord = value: invalid "render options" "an attribute set" value;
+    onUnknown = name: _value: "unknown render option '${name}'";
+    order = [
+      "maxStringLength"
+      "maxListItems"
+      "fallback"
+    ];
+    fields = {
+      maxStringLength = boundField "maxStringLength" 256;
+      maxListItems = boundField "maxListItems" 32;
+      fallback = {
+        default = "<unrenderable value>";
+        validate = builtins.isString;
+        onInvalid = _record: value: invalid "render option 'fallback'" "a string" value;
+      };
+    };
+  };
+
+  shapeOptions = schema.compile {
+    onRecord = value: invalid "render options" "an attribute set" value;
+    onUnknown = name: _value: "unknown render option '${name}'";
+    order = [ "maxAttrs" ];
+    fields.maxAttrs = boundField "maxAttrs" 32;
+  };
 
   isDerivation =
     value:
@@ -104,98 +119,80 @@ let
   safeRenderWith =
     options: value:
     let
-      config = {
-        maxStringLength = options.maxStringLength or 256;
-        maxListItems = options.maxListItems or 32;
-        fallback = options.fallback or "<unrenderable value>";
-      };
-      valid = validateOptions {
-        inherit options;
-        allowed = [
-          "maxStringLength"
-          "maxListItems"
-          "fallback"
-        ];
-        bounds = [
-          "maxStringLength"
-          "maxListItems"
-        ];
-        strings = [ "fallback" ];
-      };
+      config = finish (renderOptions options);
     in
-    builtins.seq valid (
-      if isDerivation value then
-        "<derivation ${truncate config.maxStringLength (derivationName value)}>"
-      else if builtins.isFunction value then
-        "<function>"
-      else if builtins.isAttrs value then
-        config.fallback
-      else if builtins.isList value then
-        renderScalarList config value
-      else
-        let
-          rendered = builtins.tryEval (renderScalar config.maxStringLength value);
-        in
-        if rendered.success && rendered.value != null then rendered.value else config.fallback
-    );
+    if isDerivation value then
+      "<derivation ${truncate config.maxStringLength (derivationName value)}>"
+    else if builtins.isFunction value then
+      "<function>"
+    else if builtins.isAttrs value then
+      config.fallback
+    else if builtins.isList value then
+      renderScalarList config value
+    else
+      let
+        rendered = builtins.tryEval (renderScalar config.maxStringLength value);
+      in
+      if rendered.success && rendered.value != null then rendered.value else config.fallback;
 
   safeShapeWith =
     options: value:
     let
-      maxAttrs = options.maxAttrs or 32;
-      valid = validateOptions {
-        inherit options;
-        allowed = [ "maxAttrs" ];
-        bounds = [ "maxAttrs" ];
-      };
+      config = finish (shapeOptions options);
       names = if builtins.isAttrs value then builtins.attrNames value else [ ];
-      shown = lib.take maxAttrs names;
+      shown = lib.take config.maxAttrs names;
       omitted = builtins.length names - builtins.length shown;
       suffix = lib.optionalString (omitted > 0) ", … (+${toString omitted})";
     in
-    builtins.seq valid (
-      if isDerivation value then
-        "<derivation ${derivationName value}>"
-      else if builtins.isAttrs value then
-        "{ ${lib.concatStringsSep ", " shown}${suffix} }"
-      else
-        "<${builtins.typeOf value}>"
-    );
+    if isDerivation value then
+      "<derivation ${derivationName value}>"
+    else if builtins.isAttrs value then
+      "{ ${lib.concatStringsSep ", " shown}${suffix} }"
+    else
+      "<${builtins.typeOf value}>";
+
+  nullableString = name: {
+    default = null;
+    validate = value: value == null || builtins.isString value;
+    onInvalid = _record: value: invalid "safeIdentity ${name}" "a string or null" value;
+  };
+
+  identityArgs = schema.compile {
+    onRecord = value: invalid "safeIdentity arguments" "an attribute set" value;
+    onUnknown = name: _value: "safeIdentity does not accept field '${name}'";
+    order = [
+      "value"
+      "label"
+      "source"
+      "noun"
+    ];
+    fields = {
+      value = {
+        required = true;
+        onMissing = _record: "safeIdentity is missing required field 'value'";
+      };
+      label = nullableString "label";
+      source = nullableString "source";
+      noun = {
+        default = "value";
+        validate = builtins.isString;
+        onInvalid = _record: value: invalid "safeIdentity noun" "a string" value;
+      };
+    };
+  };
 
   safeIdentity =
-    args@{
-      value,
-      label ? null,
-      source ? null,
-      noun ? "value",
-    }:
+    args:
     let
-      unknown = builtins.filter (
-        name:
-        !(builtins.elem name [
-          "value"
-          "label"
-          "source"
-          "noun"
-        ])
-      ) (builtins.attrNames args);
+      config = finish (identityArgs args);
     in
-    if unknown != [ ] then
-      throw "krisis: safeIdentity received unknown fields ${lib.concatStringsSep ", " unknown}"
-    else if label != null && !builtins.isString label then
-      invalid "safeIdentity label" "a string or null" label
-    else if source != null && !builtins.isString source then
-      invalid "safeIdentity source" "a string or null" source
-    else if !builtins.isString noun then
-      invalid "safeIdentity noun" "a string" noun
-    else
-      identity.render {
-        identity = identity.mk { inherit label source; };
-        renderLabel = selected: "${noun} '${selected}'";
-        renderSource = selected: "${noun} at ${selected}";
-        renderPath = selected: "${noun} at ${lib.concatStringsSep "." selected}";
-        fallback = "${noun} ${safeShapeWith { } value}";
-      };
+    identity.render {
+      identity = identity.mk { inherit (config) label source; };
+      renderLabel = selected: "${config.noun} '${selected}'";
+      renderSource = selected: "${config.noun} at ${selected}";
+      renderPath = selected: "${config.noun} at ${lib.concatStringsSep "." selected}";
+      fallback = "${config.noun} ${safeShapeWith { } config.value}";
+    };
 in
 {
   safeRender = safeRenderWith { };
