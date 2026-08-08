@@ -1,4 +1,4 @@
-{ lib }:
+{ lib, identity }:
 let
   scalarTypes = [
     "bool"
@@ -188,12 +188,14 @@ let
       invalid "safeIdentity source" "a string or null" source
     else if !builtins.isString noun then
       invalid "safeIdentity noun" "a string" noun
-    else if label != null then
-      "${noun} '${label}'"
-    else if source != null then
-      "${noun} at ${source}"
     else
-      "${noun} ${safeShapeWith { } value}";
+      identity.render {
+        identity = identity.mk { inherit label source; };
+        renderLabel = selected: "${noun} '${selected}'";
+        renderSource = selected: "${noun} at ${selected}";
+        renderPath = selected: "${noun} at ${lib.concatStringsSep "." selected}";
+        fallback = "${noun} ${safeShapeWith { } value}";
+      };
 in
 {
   safeRender = safeRenderWith { };

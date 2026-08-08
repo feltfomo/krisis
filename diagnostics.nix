@@ -1,4 +1,4 @@
-{ lib }:
+{ lib, validation }:
 let
   allowedSeverities = [
     "error"
@@ -284,9 +284,14 @@ let
     if !builtins.isList groups || !lib.all builtins.isList groups then
       invalid "groups" "a list of diagnostic lists" groups
     else
-      builtins.concatLists groups;
+      validation.collect groups;
 
-  optionalDiagnostic = condition: diagnostic: lib.optional condition diagnostic;
+  optionalDiagnostic =
+    condition: diagnostic:
+    if !builtins.isBool condition then
+      invalid "optional diagnostic condition" "a boolean" condition
+    else
+      validation.optional condition diagnostic;
 
   withErrorContext =
     message: value:

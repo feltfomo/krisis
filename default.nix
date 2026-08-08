@@ -1,7 +1,14 @@
 { lib }:
 let
-  safe = import ./safe-render.nix { inherit lib; };
-  diagnostics = import ./diagnostics.nix { inherit lib; };
+  axiom = import ../axiom { inherit lib; };
+  safe = import ./safe-render.nix {
+    inherit lib;
+    inherit (axiom) identity;
+  };
+  diagnostics = import ./diagnostics.nix {
+    inherit lib;
+    inherit (axiom) validation;
+  };
 in
 {
   inherit (safe)
