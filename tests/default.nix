@@ -1,6 +1,6 @@
-{ lib }:
+{ lib, axiom }:
 let
-  krisis = import ../default.nix { inherit lib; };
+  krisis = import ../src { inherit lib axiom; };
 
   throws = value: !(builtins.tryEval (builtins.deepSeq value value)).success;
 

@@ -1,6 +1,5 @@
-{ lib }:
+{ lib, axiom }:
 let
-  axiom = import ../axiom { inherit lib; };
   safe = import ./safe-render.nix {
     inherit lib;
     inherit (axiom) identity validation schema;
