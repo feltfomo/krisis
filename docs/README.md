@@ -1,13 +1,18 @@
 # Krisis
 
-Krisis is the shared diagnostic and safe-rendering library for `_lib` subsystems. It provides validated diagnostic records, caller-owned reporting policy, contextual evaluation, collection helpers, and bounded descriptions of values that may contain derivations, secrets, or throwing fields.
+Krisis is the shared diagnostic and safe-rendering library for its consumers, lexicon among them. It provides validated diagnostic records, caller-owned reporting policy, contextual evaluation, collection helpers, and bounded descriptions of values that may contain derivations, secrets, or throwing fields.
 
 It is a maintainer API, not an aspect-authoring surface.
 
 ## Import
 
 ```nix
-krisis = import ./modules/_lib/krisis { inherit lib; };
+# krisis takes the same axiom its consumer uses, so schemas compare equal
+# across the closure instead of being two copies that merely look alike
+krisis = inputs.krisis.lib.krisis { inherit lib axiom; };
+
+# or directly, from a checkout of this repo
+krisis = import ./src { inherit lib axiom; };
 ```
 
 ## Exports
@@ -74,7 +79,7 @@ Use a factory when one subsystem emits several related diagnostics:
 problem = krisis.mkDiagnosticFactory {
   severity = "error";
   codePrefix = "furnish";
-  primary.source = "modules/_lib/furnish/core.nix";
+  primary.source = "src/furnish/core.nix";
 };
 
 problem {
@@ -219,10 +224,9 @@ Preserve these rules:
 
 ## Verification
 
-Krisis has a dedicated check and is also part of the full flake gate:
+Krisis gates its own suite through the flake check:
 
 ```fish
-nix build .#checks.x86_64-linux.krisis -L
 nix fmt
 nix flake check -L
 ```
