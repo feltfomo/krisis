@@ -13,15 +13,10 @@ let
     "path"
     "string"
   ];
-
   invalid =
     field: expected: value:
     "${field} must be ${expected}; got ${builtins.typeOf value}";
-
-  # malformed options are malformed direct use of krisis, so accumulated
-  # diagnostics end in one throw rather than a returned result
   failKrisis = diagnostics: throw "krisis: ${lib.concatStringsSep "; " diagnostics}";
-
   finish = validation.finish failKrisis;
 
   boundField = name: default: {
@@ -96,44 +91,42 @@ let
   renderScalarList =
     config: values:
     let
-      attempted = builtins.tryEval (
-        let
-          count = builtins.length values;
-          shown = lib.take config.maxListItems values;
-        in
-        if builtins.all (value: builtins.elem (builtins.typeOf value) scalarTypes) shown then
-          {
-            rendered = builtins.toJSON (map (normalizeScalar config.maxStringLength) shown);
-            omitted = count - builtins.length shown;
-          }
-        else
-          null
-      );
+      shown = lib.take config.maxListItems values;
+      omitted = builtins.length values - builtins.length shown;
     in
-    if !attempted.success || attempted.value == null then
-      config.fallback
+    if builtins.all (value: builtins.elem (builtins.typeOf value) scalarTypes) shown then
+      builtins.toJSON (map (normalizeScalar config.maxStringLength) shown)
+      + lib.optionalString (omitted > 0) " (+${toString omitted} more)"
     else
-      attempted.value.rendered
-      + lib.optionalString (attempted.value.omitted > 0) " (+${toString attempted.value.omitted} more)";
+      config.fallback;
+
+  attempt =
+    fallback: rendered:
+    let
+      result = builtins.tryEval rendered;
+    in
+    if result.success && result.value != null then result.value else fallback;
 
   safeRenderWith =
     options: value:
     let
       config = finish (renderOptions options);
     in
-    if isDerivation value then
-      "<derivation ${truncate config.maxStringLength (derivationName value)}>"
-    else if builtins.isFunction value then
-      "<function>"
-    else if builtins.isAttrs value then
-      config.fallback
-    else if builtins.isList value then
-      renderScalarList config value
-    else
-      let
-        rendered = builtins.tryEval (renderScalar config.maxStringLength value);
-      in
-      if rendered.success && rendered.value != null then rendered.value else config.fallback;
+    # malformed options must not be swallowed by the rendering fallback
+    builtins.seq config (
+      attempt config.fallback (
+        if isDerivation value then
+          "<derivation ${truncate config.maxStringLength (derivationName value)}>"
+        else if builtins.isFunction value then
+          "<function>"
+        else if builtins.isAttrs value then
+          config.fallback
+        else if builtins.isList value then
+          renderScalarList config value
+        else
+          renderScalar config.maxStringLength value
+      )
+    );
 
   safeShapeWith =
     options: value:
@@ -144,12 +137,16 @@ let
       omitted = builtins.length names - builtins.length shown;
       suffix = lib.optionalString (omitted > 0) ", … (+${toString omitted})";
     in
-    if isDerivation value then
-      "<derivation ${derivationName value}>"
-    else if builtins.isAttrs value then
-      "{ ${lib.concatStringsSep ", " shown}${suffix} }"
-    else
-      "<${builtins.typeOf value}>";
+    builtins.seq config (
+      attempt "<unrenderable value>" (
+        if isDerivation value then
+          "<derivation ${derivationName value}>"
+        else if builtins.isAttrs value then
+          "{ ${lib.concatStringsSep ", " shown}${suffix} }"
+        else
+          "<${builtins.typeOf value}>"
+      )
+    );
 
   nullableString = name: {
     default = null;
@@ -197,9 +194,5 @@ in
 {
   safeRender = safeRenderWith { };
   safeShape = safeShapeWith { };
-  inherit
-    safeRenderWith
-    safeShapeWith
-    safeIdentity
-    ;
+  inherit safeRenderWith safeShapeWith safeIdentity;
 }

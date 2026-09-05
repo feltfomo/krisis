@@ -7,8 +7,7 @@ It is a maintainer API, not an aspect-authoring surface.
 ## Import
 
 ```nix
-# krisis takes the same axiom its consumer uses, so schemas compare equal
-# across the closure instead of being two copies that merely look alike
+# share the axiom version used by the consuming subsystem
 krisis = inputs.krisis.lib.krisis { inherit lib axiom; };
 
 # or directly, from a checkout of this repo
@@ -23,7 +22,12 @@ krisis = import ./src { inherit lib axiom; };
 | `mkDiagnosticFactory` | Bind default severity, code prefix, and primary location. |
 | `qualifyCode` | Join a diagnostic namespace and local code. |
 | `allowedSeverities` | Supported severity names. |
-| `mkReporter` | Bind rendering and throwing policy once. |
+| `mkReporter` | Bind rendering, finishing validation results, and throwing policy once. |
+| `validateType` | Adapt an Axiom runtime type into caller-coded diagnostics. |
+| `renderPath` | Render zero-based structured validation paths. |
+| `summarizeDiagnostics` | Count severities and codes without rendering messages or context. |
+| `suggest`, `suggestWith` | Select a nearby vocabulary member with stable tie handling. |
+| `editDistance` | Re-export nixpkgs' Levenshtein implementation. |
 | `renderDiagnostics` | Render a list with caller-provided formatting. |
 | `throwDiagnostics` | Render and throw a list. |
 | `renderPlain` | Stock one-diagnostic code/label/message rendering with notes and help. |
@@ -112,7 +116,8 @@ Reporter methods are:
 
 - `render` and `renderOne`;
 - `fail` and `failOne`;
-- `checked`, which returns a value only when the diagnostic list is empty.
+- `checked`, which returns a value only when the diagnostic list is empty;
+- `finish result`, which unwraps an Axiom validation result or applies the reporter's failure policy.
 
 `formatHeader` defaults to no header. Returning `null` omits it. `separator` defaults to a newline.
 
@@ -221,6 +226,45 @@ Preserve these rules:
 - prefer validated author labels and source locations, then shallow shape;
 - render known-safe claim and schema data separately from opaque payloads;
 - add poison-value tests for every new rendering or contextual-evaluation branch.
+
+## Runtime type diagnostics
+
+Use an Axiom runtime description when nested fields should retain precise paths:
+
+```nix
+parse = krisis.validateType {
+  type = axiom.types.record {
+    ports = axiom.types.listOf axiom.types.int;
+    implementation = axiom.types.opaque;
+  };
+  code = "service/shape";
+  label = "server";
+  path = [ "config" ];
+};
+
+result = parse declaration;
+value = reporter.finish result;
+```
+
+`type` and the complete diagnostic `code` are required. `label`, `source`, `severity` (default `error`), and a path prefix (default empty) are optional. Options are checked even when validation succeeds. Success preserves the parsed value; failure maps each neutral type issue to a Krisis record without attaching the input. `context.validation` contains only `path`, `expected`, `actual`, and `reason`. The normal message includes a rendered path and expected/actual outer shapes. The caller still owns the code and reporting policy.
+
+`renderPath [ "config" "ports" 0 ]` returns `$.config.ports[0]`. Exotic field names are quoted, and numeric components are zero-based, non-negative indexes. Root is `$`. Attribute paths do not grant authority to read the original payload.
+
+A type validator is not a safe renderer. A thrown input or predicate remains an evaluation error; it is not converted into a normal validation diagnostic. Use `opaque` for values that the boundary must not inspect.
+
+## Summaries and suggestions
+
+`summarizeDiagnostics diagnostics` returns `total`, `hasErrors`, `bySeverity` (always containing error, warning, and info), and `byCode` counts. It validates only the code/severity envelope and never renders messages, notes, or contexts. Counting diagnostics does not create a new failure policy. A warning still counts as a diagnostic when passed to `reporter.finish`; callers choose whether to separate severities first.
+
+`suggest input candidates` returns the closest candidate within distance 1 for inputs of up to four characters, otherwise distance 3, or null. Equal-distance ties retain the first candidate. `suggestWith { maxDistance = 2; } input candidates` sets an explicit non-negative bound. Candidates must be strings. The implementation narrows the current best bound, uses nixpkgs' `levenshteinAtMost`, and does not sort all candidates. `editDistance a b` delegates to nixpkgs' `levenshtein`.
+
+## Rendering limits
+
+Thrown roots now return the same fallback as other unrenderable values. Malformed options still throw outside that fallback, including for function and derivation branches. Only the bounded output expression is attempted; raw payloads are never deep-forced. Nix `tryEval` catches throw/assert failures, not every evaluator error, abort, or nontermination. Output limits are not a general evaluation budget or secrecy guarantee.
+
+## Evaluator compatibility
+
+The source uses `|>` and the flake requests `pipe-operators`. On Nix 2.25, enable `extra-experimental-features = pipe-operators`, or accept this flake's setting. A raw `import ./src` does not apply flake configuration. The tested Lix development evaluator supports pipes without that flag and warns if given the Nix-only feature name. Keep Axiom and Krisis on compatible source revisions; Lexicon follows one Axiom input across both.
 
 ## Verification
 

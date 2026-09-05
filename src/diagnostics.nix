@@ -15,9 +15,7 @@ let
     field: expected: value:
     "diagnostic ${field} must be ${expected}; got ${builtins.typeOf value}";
 
-  # krisis has nobody to hand accumulated diagnostics back to -- a malformed
-  # diagnostic record is malformed direct use of this library, so accumulation
-  # always ends in one throw
+  # malformed diagnostics have no caller-owned reporting boundary
   failKrisis = diagnostics: throw "krisis: ${lib.concatStringsSep "; " diagnostics}";
 
   finish = validation.finish failKrisis;
@@ -69,8 +67,7 @@ let
       invalid "notes" "a list of strings" notes
     );
 
-  # an explicit null in an optional field has always meant absent here, and
-  # dropping it before the schema runs keeps that
+  # explicit null denotes absence in optional presentation fields
   nullableFields = [
     "primary"
     "secondaryLabels"
@@ -265,9 +262,6 @@ let
 
   throwDiagnostics = args: throw (renderDiagnostics args);
 
-  # stock one-diagnostic text for subsystems without their own format -- code,
-  # optional primary label, and message on the first line, notes and help
-  # indented beneath.
   renderPlain =
     diagnostic:
     let
@@ -304,9 +298,41 @@ let
     in
     {
       inherit render fail;
+      finish = validation.finish fail;
       renderOne = diagnostic: render [ diagnostic ];
       failOne = diagnostic: fail [ diagnostic ];
       checked = diagnostics: value: if diagnostics == [ ] then value else fail diagnostics;
+    };
+
+  summarizeDiagnostics =
+    diagnostics:
+    let
+      checked =
+        if !builtins.isList diagnostics then
+          failKrisis [ "diagnostic summary requires a list" ]
+        else
+          map (
+            item:
+            if
+              builtins.isAttrs item
+              && builtins.isString (item.code or null)
+              && item.code != ""
+              && builtins.elem (item.severity or null) allowedSeverities
+            then
+              item
+            else
+              failKrisis [ "diagnostic summary requires a code and known severity" ]
+          ) diagnostics;
+      severities = builtins.groupBy (item: item.severity) checked;
+      bySeverity = lib.genAttrs allowedSeverities (
+        severity: builtins.length (severities.${severity} or [ ])
+      );
+    in
+    builtins.seq severities {
+      total = builtins.length checked;
+      inherit bySeverity;
+      hasErrors = bySeverity.error > 0;
+      byCode = lib.mapAttrs (_: builtins.length) (builtins.groupBy (item: item.code) checked);
     };
 
   collectDiagnostics =
@@ -340,6 +366,7 @@ in
     throwDiagnostics
     renderPlain
     mkReporter
+    summarizeDiagnostics
     collectDiagnostics
     optionalDiagnostic
     withErrorContext

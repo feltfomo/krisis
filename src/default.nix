@@ -8,6 +8,12 @@ let
     inherit lib;
     inherit (axiom) validation schema canonical;
   };
+  types = import ./types.nix {
+    inherit lib;
+    inherit (axiom) validation;
+    inherit (diagnostics) mkDiagnostic;
+  };
+  suggestions = import ./suggestions.nix { inherit lib; };
 in
 {
   inherit (safe)
@@ -17,6 +23,8 @@ in
     safeShapeWith
     safeIdentity
     ;
+  inherit (types) validateType renderPath;
+  inherit (suggestions) editDistance suggest suggestWith;
   inherit (diagnostics)
     allowedSeverities
     qualifyCode
@@ -26,6 +34,7 @@ in
     throwDiagnostics
     renderPlain
     mkReporter
+    summarizeDiagnostics
     collectDiagnostics
     optionalDiagnostic
     withErrorContext

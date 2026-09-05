@@ -214,7 +214,8 @@ let
           }
         );
     }
-  ];
+  ]
+  ++ import ./extensions.nix { inherit lib axiom krisis; };
 
   failing = builtins.filter (case: !case.pass) cases;
   ok =

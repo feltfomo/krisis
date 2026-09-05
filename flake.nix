@@ -1,6 +1,8 @@
 {
   description = "diagnostic construction, rendering, and poison-safe shape inspection for nix config libraries";
 
+  nixConfig.extra-experimental-features = [ "pipe-operators" ];
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
@@ -19,8 +21,7 @@
         "aarch64-linux"
       ];
 
-      # krisis wants a lib and an axiom, so a consumer holding both passes them
-      # straight through instead of resolving axiom a second time.
+      # consumers supply the same axiom instance as their own boundaries
       flake.lib.krisis = import ./src;
 
       perSystem =
@@ -31,8 +32,7 @@
         {
           treefmt = import ./formatter.nix;
 
-          # the suite throws on the first failing case, so evaluating .ok is the
-          # whole check and the assert keeps that throw at build time.
+          # pure cases must pass before the check derivation is admitted
           checks.tests = pkgs.runCommandLocal "krisis-tests" { } (
             assert
               (import ./tests {
@@ -44,7 +44,7 @@
 
           devShells.default = pkgs.mkShell {
             packages = [
-              pkgs.nixfmt-rfc-style
+              pkgs.nixfmt
               pkgs.statix
             ];
           };
