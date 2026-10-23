@@ -6,14 +6,22 @@ separate owners. Context and application values stay opaque.
 
 ## Import and basic use
 
-Both imports take `{ lib, fx }`. `fx` must be the corrected nix-effects instance
-provided by `nix/dependencies.nix`, described in [qualification.md](qualification.md).
-The flake exports `lib.krisis`; it doesn't re-export nix-effects.
+Both imports take caller-owned `{ lib, fx }`. Import the shipped corrected source
+at `packages.<system>.qualified-nix-effects` with your `lib`, then share the
+resulting `fx` instance between Krisis and application computations. Krisis doesn't
+re-export the upstream API or acquire dependencies automatically.
+See [qualification.md](qualification.md) for the supported fragment.
 
 ```nix
+fx = import inputs.krisis.packages.${system}.qualified-nix-effects { inherit lib; };
 k = inputs.krisis.lib.krisis { inherit lib fx; };
 # or
 k = import ./src { inherit lib fx; };
+
+report = k.report.run {} (fx.bind
+  (k.report.emit { code = "example"; severity = "info"; message = "ready"; })
+  (_: fx.pure 42));
+value = fx.state.forceThunk report.outcome.value;
 ```
 
 [examples/basic.nix](../examples/basic.nix) is a runnable expression taking the
@@ -35,8 +43,8 @@ in k.report.run {} (k.validation.andThen
 
 ## Diagnostics and locations
 
-`diagnostic.make` accepts a closed record with required nonempty `code` and
-`message`. `severity` defaults to `"error"` and accepts `"error"`, `"warning"`, or
+`diagnostic.make` accepts a closed record with a required nonempty `code` and
+a required string `message`. `severity` defaults to `"error"` and accepts `"error"`, `"warning"`, or
 `"info"`. The normalized fields are `severity`, `code`, `message`, `primary`,
 `related`, `notes`, `help`, and `context`. Their defaults are null for `primary`,
 `help`, and `context`, and empty lists for `related` and `notes`.
@@ -123,7 +131,7 @@ authority to inspect the original value.
 and always fails. Use `fx.bind` and `fx.map` to compose computations; `|>` applies
 pure functions and doesn't bind effects.
 
-`report.run { policy ? {}; mode ? "collecting"; handlers ? {}; } computation`
+`report.run { policy ? {}; mode ? "collecting"; handlers ? {}; formatter ? null; } computation`
 returns `diagnostics` in emission order, `summary`, `outcome`, and a parallel
 `visibility` list. The summary has `total`, `bySeverity`, `byCode`, and `hasErrors`.
 It inspects only the envelope. Diagnostics include hidden events.
@@ -154,7 +162,7 @@ siblings are isolated. Explicit diagnostic fields override dynamic defaults.
 A previously normalized diagnostic already has explicit severity and primary fields.
 
 For a larger interpreter, pass extra handlers to `report.run`, or pass
-`report.handlers.collecting { policy ? {}; handlers ? {}; }` to `fx.handle`.
+`report.handlers.collecting { policy ? {}; handlers ? {}; formatter ? null; }` to `fx.handle`.
 `report.handlers.strict` has the same interface. These configurations own state
 `{ head; count; failed; }` and the return projection, and return a report. Extra
 handlers must preserve this state or update it without replacing its owned fields;
@@ -245,22 +253,104 @@ expression actually forced, such as a callback's selected field. Wrapping a lazy
 record doesn't add context to an independently forced child. Original exceptions
 remain exceptions; Krisis doesn't convert callback throws to diagnostics.
 
-## Presentation and development
+## Presentation
 
-`render.project diagnostic` returns validated normalized presentation data without
-context. `render.plain diagnostic` supplies terminal severity/code/message output,
-with a primary identity, notes, and help. Complete location/related rendering,
-versioned JSON, the Nix module adapter, further executable examples, and CI aren't
-implemented or exported yet.
+Diagnostic entry points are `render.project diagnostic`, `render.plain diagnostic`,
+`render.json diagnostic`, and `render.custom formatter diagnostic`. Report entry
+points are `render.projectReport report`, `render.plainReport report`,
+`render.jsonReport report`, and `render.customReport formatter report`. Input kind
+is explicit. Pass reports returned by the diagnostic interpreter, not arbitrary
+records with application fields.
+
+`project` validates the complete normalized presentation record and returns only
+`severity`, `code`, `message`, `primary`, `related`, `notes`, and `help`. Context is
+never read. Plain output includes every supplied label, source, range, and path,
+then related locations and messages, notes, and help in their original order.
+Multiline messages indent continuation lines. Ranges display as
+`source:startLine:startColumn-endLine:endColumn`. No source files are read.
+
+Report presentation uses the recorded visibility decisions and effective
+severities. Hidden diagnostics aren't projected, so their presentation fields stay
+unused. Counts and outcome still describe the complete report. Presentation never
+recovers or traverses `outcome.value`. Source ranges and structured paths retain
+the conventions in [Diagnostics and locations](#diagnostics-and-locations).
+
+A custom formatter receives the complete validated projection for its explicit
+entry point. `custom` receives the diagnostic record above; `customReport` receives
+the versioned report record below. Its result must be a string. Callback throws
+keep their original error, with `builtins.addErrorContext` around the callback
+result actually forced. There is no `tryEval` fallback. `formatter` in `report.run`
+and either handler configuration defaults to null. In strict mode it replaces the
+terminal diagnostic formatter after effective severity is applied; collection
+never invokes it. A supplied nonfunction fails configuration checking.
+
+## JSON version 1
+
+`render.json` serializes `{ schemaVersion = 1; kind = "diagnostic";
+diagnostic = render.project diagnostic; }`. `render.projectReport` is the exact
+record serialized by `render.jsonReport`:
+
+| Field | Representation |
+| --- | --- |
+| `schemaVersion` | Integer `1`. |
+| `kind` | String `"report"`. |
+| `diagnostics` | Visible diagnostics in emission order, with the diagnostic projection's fields plus `originalSeverity` and `effectiveSeverity`. `severity` equals effective severity. |
+| `summary` | `total`, `hasErrors`, `bySeverity` with `error`, `warning`, `info`, and `byCode` as a lexical list of `{ code; count; }` records. Includes hidden events. |
+| `outcome` | `{ status = "Success"; }` or `{ status = "Failure"; }`, with no value. |
+
+Optional fields normalize to null or empty lists as in diagnostic construction.
+Locations and path segments retain their normalized structured representation.
+Code counts use records in a list because Nix gives special coercion meaning to
+attribute names such as `__toString` and `outPath`. Object keys serialize in Nix's
+deterministic attribute order. Diagnostic, related, and note lists retain their
+original order. Repeated output contains no timestamps or inferred host metadata.
+`builtins.fromJSON` recovers the projected record, not the original opaque report.
+The explicit field allowlist omits context, raw validation inputs, upstream error
+trees, handler state, functions, and application values. Serialization doesn't
+inspect arbitrary values to make them serializable. Caller-supplied presentation
+strings remain caller-owned data and may contain sensitive text.
+
+## Nix modules and runnable examples
+
+`nix.module report` returns an ordinary fragment with one assertion and warning
+strings. Assertion validity follows `outcome`, including explicit info-level
+failure with zero counted errors. On failure its lazy message renders all retained
+events with effective severities, including hidden explanations. This preserves
+explicit failure explanations without inferring failure from counted severity.
+Visible effective warnings become warnings; info stays report data. Promoted
+warnings participate in failure. Suppression and thresholds never change validity.
+A successful report's arbitrary value remains untouched.
+
+Import this fragment alongside the caller's assertion/warning option declarations.
+`lib.evalModules` alone doesn't enforce assertions. The pinned NixOS consumer uses
+[`lib.asserts.checkAssertWarn`](https://github.com/NixOS/nixpkgs/blob/f13ff45afd1bb73e640eaa08a7066dbed07e3238/lib/asserts.nix)
+with the evaluated conditions and warnings before returning its application value.
+Tests use that helper and the pinned
+[assertions module](https://github.com/NixOS/nixpkgs/blob/f13ff45afd1bb73e640eaa08a7066dbed07e3238/nixos/modules/misc/assertions.nix).
+No NixOS build or activation is needed.
+
+Every expression below takes `{ lib, fx }` and is imported by the shared test tree:
+
+- [basic.nix](../examples/basic.nix) checks a collected typed boundary.
+- [composition.nix](../examples/composition.nix) contrasts independent accumulation with dependent checking.
+- [locations.nix](../examples/locations.nix) nests location defaults and restores the enclosing source.
+- [interpretation.nix](../examples/interpretation.nix) customizes the report return projection inside a larger effect interpreter.
+- [json.nix](../examples/json.nix) serializes a report with throwing context and an opaque successful value.
+- [module.nix](../examples/module.nix) supplies a source identifier and structured path, and optionally uses caller-owned `unsafeGetAttrPos` with null handled.
+
+Krisis doesn't discover arbitrary value origins. Attribute positions, when
+available, identify a declaration point; they don't infer an expression's extent.
+
+## Development
 
 The pinned environment supplies Nix and nix-unit 2.35.1. The source uses `|>`;
 direct imports need Nix's `pipe-operators` feature. See
 [qualification.md](qualification.md) for lock parity, offline sandboxing, source
-admission, and the forcing contract.
+admission, the forcing matrix, and CI preparation.
 
 ```fish
 devenv shell
-krisis-test baseline extensions
+krisis-test presentation integration examples
 krisis-fmt
 krisis-gate
 # the same full gate outside the shell

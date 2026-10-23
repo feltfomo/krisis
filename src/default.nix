@@ -27,7 +27,18 @@ in
       variant
       ;
   };
-  inherit render;
+  render = {
+    inherit (render)
+      project
+      projectReport
+      plain
+      plainReport
+      json
+      jsonReport
+      custom
+      customReport
+      ;
+  };
   report = {
     inherit (report)
       emit
@@ -47,10 +58,5 @@ in
   };
   inspect = import ./inspect.nix { inherit lib types; };
   suggest = import ./suggestions.nix { inherit lib; };
-  nix.withErrorContext =
-    message: value:
-    if !builtins.isString message then
-      throw "krisis: error context must be a string"
-    else
-      builtins.addErrorContext message value;
+  nix = import ./nix.nix { inherit lib render; };
 }

@@ -6,6 +6,7 @@ let
     let lib = import ${inputs.nixpkgs}/lib;
     in import ${source}/tests {
       inherit lib;
+      assertionsModule = ${inputs.nixpkgs}/nixos/modules/misc/assertions.nix;
       fx = import ${dependencies.fxSource} { inherit lib; };
     }
   '';

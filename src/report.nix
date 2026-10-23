@@ -81,7 +81,7 @@ let
     failed = false;
   };
   record =
-    p: strict: explicit:
+    p: strict: formatter: explicit:
     { param, state }:
     let
       d = diagnostic.make (forceThunk param);
@@ -102,7 +102,11 @@ let
       };
     in
     if strict && failed then
-      throw (render.plain (d // { severity = decision.effectiveSeverity; }))
+      throw (
+        (if formatter == null then render.plain else render.custom formatter) (
+          d // { severity = decision.effectiveSeverity; }
+        )
+      )
     else if explicit then
       {
         state = next;
@@ -147,6 +151,7 @@ let
     {
       policy ? { },
       handlers ? { },
+      formatter ? null,
     }:
     let
       p = policyConfig policy;
@@ -155,13 +160,15 @@ let
           inherit state;
           resume = mkThunk emptyDefaults;
         };
-        "krisis.emit" = record p strict false;
-        "krisis.fail" = record p strict true;
+        "krisis.emit" = record p strict formatter false;
+        "krisis.fail" = record p strict formatter true;
       };
       collisions = lib.intersectLists (builtins.attrNames owned) (builtins.attrNames handlers);
     in
     builtins.seq p (
-      if collisions != [ ] then
+      if formatter != null && !builtins.isFunction formatter then
+        throw "krisis: formatter must be a function"
+      else if collisions != [ ] then
         throw "krisis: handler collision ${builtins.concatStringsSep ", " collisions}"
       else
         {
@@ -188,6 +195,7 @@ let
       policy ? { },
       mode ? "collecting",
       handlers ? { },
+      formatter ? null,
     }:
     computation:
     if
@@ -198,7 +206,7 @@ let
     then
       throw "krisis: invalid report mode"
     else
-      fx.handle (interpreter (mode == "strict") { inherit policy handlers; }) computation;
+      fx.handle (interpreter (mode == "strict") { inherit policy handlers formatter; }) computation;
 in
 {
   inherit

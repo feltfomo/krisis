@@ -1,6 +1,7 @@
 # Qualified boundary and development contract
 
-Krisis exports the typed diagnostic core documented in [README.md](README.md).
+Krisis exports typed diagnostics, presentation, and Nix module integration documented
+in [README.md](README.md).
 This contract records the supported dependency boundary and development gate.
 The small interpreters under `tests/qualification` remain mechanism regressions;
 they aren't production APIs or collector cost evidence.
@@ -11,8 +12,11 @@ they aren't production APIs or collector cost evidence.
 nix-effects `55ec2657c3c37e178c7730992a0f510739c1f945`, then imports its
 curated public value. Qualification and library imports must use
 this owner. The patched source is also available through the flake's
-`packages.<system>.qualified-nix-effects`. Consumer imports use no private
-paths, `exposeInternals`, or experimental namespaces.
+`packages.<system>.qualified-nix-effects`. Consumers import that shipped source
+with their own `lib`, then pass the resulting `fx` to Krisis and use it in their
+application computations. Krisis initialization remains `{ lib, fx }`; it doesn't
+re-export all of nix-effects. Consumer imports use no private paths,
+`exposeInternals`, or experimental namespaces.
 
 The qualified fragment is `String`, `Int`, `Bool`, `Float`, `Attrs`, `Path`,
 `Function`, `Unit`/`Null`, opaque `Any`, closed `Record fields`, `ListOf type`,
@@ -141,11 +145,52 @@ reader updates aren't restoring scopes.
 | Safe inspection | Bounds and declared shallow/prefix observations | Opaque attr values, derivation internals, omitted elements |
 
 Unknown options fail at construction. Deferred checks execute when the
-corresponding projection is requested. This includes `validation.check` locations
-on successful input and collected failures. Type/code checks and unknown control
-options remain immediate. Summaries mustn't inspect unused location defaults. Preserve callback exceptions with `builtins.addErrorContext`
+corresponding projection is requested. A `validation.check` location is checked
+when a requested failure diagnostic uses it. Successful validation and collected
+summaries don't inspect unused locations. Type/code checks and unknown control
+options remain immediate. Preserve callback exceptions with `builtins.addErrorContext`
 around the expression actually forced. Catch-all exception conversion isn't
 supported.
+
+## Terminal presentation and module boundary
+
+The [API guide](README.md#presentation) defines the exact diagnostic and report
+entry points, formatter inputs, and version 1 JSON fields. Every renderer uses the
+same validated diagnostic projection. Requested report presentation validates
+visible diagnostics only, projects the summary's named scalar/count fields and
+outcome status, and never reads successful application values. Original and
+effective severity are both retained in report presentation. Suppression and
+thresholds affect visibility, not outcome or counts. JSON round-trips through
+`builtins.fromJSON` into presentation data, without opaque payloads.
+
+Custom formatters receive the declared complete projection and must return strings.
+Strict interpretation uses the same diagnostic projection and terminal renderer;
+an optional formatter replaces its final string production. Callback exceptions
+remain exceptions with context added at the demanded callback result. No exception
+text recovery or arbitrary error conversion is promised.
+
+Source coordinates are caller-owned one-based lines/columns with exclusive ends.
+A range requires a source identifier. Structured paths and all supplied primary
+and related location fields remain visible in plain and JSON presentation.
+Krisis reads no source file and doesn't infer value provenance or coordinate units.
+
+The module adapter consumes an existing report's outcome and visibility. Its one
+assertion tests success directly. Its failure message, demanded only on failure,
+renders all retained diagnostics so an explicit info-level failure remains
+explainable even when hidden or when `hasErrors` is false. Visible effective
+warnings alone become warning strings. Tests evaluate the pinned assertions option
+module and then consume conditions through public `lib.asserts.checkAssertWarn`.
+This is pure assertion enforcement evidence, not a NixOS build or activation.
+
+Additional forcing boundaries:
+
+| Operation | May inspect | Must defer |
+| --- | --- | --- |
+| Report presentation | Visible diagnostic projections, named summary fields, outcome constructor | Hidden presentation, context, outcome value |
+| Module assertion condition | Outcome constructor | All presentation and application values |
+| Module warning strings | Visible effective warning presentations | Other diagnostic presentations and application values |
+| Failed assertion message | Retained diagnostic presentation | Context and application values |
+| Custom formatter | Declared validated projection and callback result's string type | Opaque application data and context |
 
 ## Development and source admission
 
@@ -187,6 +232,24 @@ private local evaluation store, empty substituters, disabled fallback, and
 the Nix build sandbox. It doesn't assign or export HOME. The outer gate also
 requests offline operation and disables remote builders. Missing local
 dependencies fail instead of fetching during the gate.
+
+CI is configured in `.github/workflows/check.yml`. It installs Nix 2.35.1 and
+the devenv CLI from the same locked devenv revision, then enters the shared shell.
+The [checkout action](https://github.com/actions/checkout/blob/3d3c42e5aac5ba805825da76410c181273ba90b1/action.yml)
+and [Nix installer](https://github.com/cachix/install-nix-action/blob/75c75c31ebece974e48ebc36b4ad125bd97bd97b/action.yml)
+are pinned to inspected commits. The installer receives an explicit Nix release
+URL, enables the sandbox, and disables its substitution override. No private cache
+or separately configured secret is required.
+
+Preparation runs `devenv shell python3 tools/workspace.py prepare`. It snapshots
+the admitted candidate, evaluates the native check derivations, reads the pinned
+Nix 2.35.1 version 4 derivation JSON, and builds their direct input derivations.
+It rejects unsupported JSON versions and dynamic dependency outputs. It doesn't
+build the check outputs or execute the suite. Ordinary fetching is allowed here.
+The subsequent `devenv test` runs the same full gate described above, offline with
+no substitution/fallback or remote builder recovery. There is no second suite leaf,
+workflow dispatch, publication, or deployment. Local verification doesn't establish
+a remote CI run. Action bootstrapping hasn't been executed on this host.
 
 Both Linux systems remain declared. Native build/test evidence is
 x86_64-linux. Evaluation of aarch64-linux doesn't establish execution there.

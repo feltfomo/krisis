@@ -1,8 +1,12 @@
 {
   lib,
   fx,
+  assertionsModule,
 }:
 {
+  presentation = import ./presentation.nix { inherit lib fx; };
+  integration = import ./integration.nix { inherit lib fx assertionsModule; };
+  examples = import ./examples.nix { inherit lib fx assertionsModule; };
   boundaries = import ./boundaries.nix { inherit lib fx; };
   baseline = import ./baseline.nix { inherit lib fx; };
   extensions = import ./extensions.nix { inherit lib fx; };

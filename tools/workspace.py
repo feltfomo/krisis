@@ -77,6 +77,32 @@ def main():
         run(["nixfmt", *(["--check"] if mode == "check-format" else []), *files])
     elif mode == "static":
         run(["statix", "check", str(snapshot("check-nix"))])
+    elif mode == "prepare":
+        parity()
+        source = snapshot("prepare")
+        system = subprocess.check_output(
+            ["nix", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"], text=True
+        )
+        reference = "path:" + str(source) + "#checks." + system
+        names = json.loads(subprocess.check_output(
+            ["nix", "eval", "--json", reference, "--apply", "builtins.attrNames"], text=True
+        ))
+        store = subprocess.check_output(
+            ["nix", "eval", "--raw", "--expr", "builtins.storeDir"], text=True
+        )
+        dependencies = set()
+        for name in names:
+            derivations = json.loads(subprocess.check_output(
+                ["nix", "derivation", "show", reference + "." + name], text=True
+            ))
+            if derivations["version"] != 4:
+                raise RuntimeError("unsupported derivation JSON version")
+            for derivation in derivations["derivations"].values():
+                for path, inputs in derivation["inputs"]["drvs"].items():
+                    if inputs["dynamicOutputs"]:
+                        raise RuntimeError("dynamic check dependencies are unsupported")
+                    dependencies.add(store + "/" + path + "^" + ",".join(inputs["outputs"]))
+        run(["nix", "build", "--no-link", *sorted(dependencies)])
     elif mode == "flake":
         parity()
         run([

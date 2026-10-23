@@ -29,7 +29,7 @@
         "aarch64-linux"
       ];
 
-      # consumers share the qualified effect instance with their own computations
+      # callers own the effect instance shared with application computations
       flake.lib.krisis = import (source + "/src");
 
       perSystem =
@@ -43,6 +43,7 @@
 
           legacyPackages.qualification = import (source + "/tests") {
             inherit (pkgs) lib;
+            assertionsModule = inputs.nixpkgs + "/nixos/modules/misc/assertions.nix";
             inherit (import ./nix/dependencies.nix { inherit inputs pkgs; }) fx;
           };
 
