@@ -1,8 +1,9 @@
-# Qualified boundary and development contract
+# Dependency qualification and evaluation contracts
 
-Krisis exports typed diagnostics, presentation, and Nix module integration documented
-in [README.md](README.md).
-This contract records the supported dependency boundary and development gate.
+The [API reference](api.md) describes the supported operations and data. This
+page records the corrected dependency, forcing boundaries, and implementation
+constraints. Contributor commands and CI preparation live in
+[Development](development.md).
 The small interpreters under `tests/qualification` remain mechanism regressions;
 they aren't production APIs or collector cost evidence.
 
@@ -73,29 +74,12 @@ validation. Its guard helper reports aggregate guard failures rather than
 nested host-refinement paths. The selected bridge uses corrected effectful
 validation, with generic walking reserved for the generated domain forms.
 
-## Results and paths
+## Result and path boundaries
 
-| Sum | Constructor record | Elimination |
-| --- | --- | --- |
-| Checked success | `{ _con = "Valid"; value = Thunk a; }` | Invoke dependent work only here. |
-| Checked failure | `{ _con = "Invalid"; }` | Preserve failures and skip dependent work. |
-| Report success | `{ _con = "Success"; value = Thunk a; }` | Recover only the requested value projection. |
-| Report failure | `{ _con = "Failure"; }` | No successful value field exists. |
-
-Independent checks retain all ordinary failures in input order. Dependent
-checks eliminate `Checked`; an upstream resumed value can't establish
-acceptance.
-
-Path segments are `{ field = name; }`, `{ index = n; }`, and
-`{ variant = tag; }`. Retain other positions as `{ upstream = position; }`.
-Quoted names remain exact strings; presentation must quote them
-unambiguously. Indexes are zero-based and nonnegative. Upstream positions use a
-closed scalar projection of the pinned Position metadata, with validated marker,
-tag, segment, intent, rule, and tag-specific name/index/layer parameters. Absent
-parameters normalize to null. Unfamiliar tags retain their common metadata without
-arbitrary fields. The path owner rejects unknown fields before inspecting values;
-normalization and diagnostic presentation share that owner. Blame paths don't
-authorize inspecting the original payload.
+The [API data definitions](api.md#data-contracts) own Checked, Outcome, and path
+shapes. Independent checks retain failures in input order; dependent checks
+eliminate Checked before continuing. Paths describe blame without authorizing
+inspection of the original payload.
 
 ## Handler, scope, and policy contracts
 
@@ -154,7 +138,7 @@ supported.
 
 ## Terminal presentation and module boundary
 
-The [API guide](README.md#presentation) defines the exact diagnostic and report
+The [API reference](api.md#render) defines the exact diagnostic and report
 entry points, formatter inputs, and version 1 JSON fields. Every renderer uses the
 same validated diagnostic projection. Requested report presentation validates
 visible diagnostics only, projects the summary's named scalar/count fields and
@@ -192,74 +176,30 @@ Additional forcing boundaries:
 | Failed assertion message | Retained diagnostic presentation | Context and application values |
 | Custom formatter | Declared validated projection and callback result's string type | Opaque application data and context |
 
-## Development and source admission
+## Collector construction and finalization
 
-Both environments select Nix 2.35.1 and nix-unit 2.35.1 through
-`nix/toolchain.nix` from nixpkgs
-`f13ff45afd1bb73e640eaa08a7066dbed07e3238`. `tools/workspace.py` enforces
-exact nixpkgs lock identity and executable identities. The active dependency
-graph and public import contract use only the corrected effect dependency.
+The collector stores a private persistent spine. Each event allocates one node and
+thunk carriers for its payload and head, caches the previous pointer to weak head
+normal form, and updates fixed scalar state. It neither copies nor forces the
+existing spine. Both reports and successful `validation.all` results use the same
+private finalizer. It allocates an indexed cursor list with `genList`, then forces
+cursors from head to tail with `foldl'`. Each cursor follows one cached predecessor
+through constant-time `elemAt`; reverse output indexes the settled cursors once.
+The three loops do linear total work without associative duplicate tracking or
+native recursion proportional to event count. Empty results don't demand the head.
 
-Use the installed devenv 2.4.0 CLI. Its module input is locked from `v2.4.0`;
-that source advertises module version 2.3.1. The version notice is upstream
-metadata, not another selected evaluator.
+This reasoning follows Nix 2.35.1's implementations of `genList`, `elemAt`, and
+`foldl'` in [primops.cc](https://github.com/NixOS/nix/blob/2.35.1/src/libexpr/primops.cc).
+It describes owned spine construction and finalization, excluding upstream
+interpretation, type checking, and requested presentation. Summaries use a fixed
+number of traversals and nix builtins for code grouping; no complexity claim is
+made for that grouping. The fixed 10,000-event and 10,000-value tests check count,
+complete order, and throwing-payload laziness. No latency or memory claim is made.
 
-```fish
-devenv shell
-krisis-test qualification.types
-krisis-fmt
-krisis-gate
-```
+## Verification limits
 
-`krisis-test` accepts zero or more nix-unit attribute paths from the single
-`tests/default.nix` tree. `krisis-fmt` changes formatting. The gate checks it.
-Outside the shell, `devenv test` selects the same full task graph as
-`krisis-gate`: `check:format`, `check:nix`, `gate:flake`, then `gate:all`.
-`krisis-gate` delegates directly to `devenv test`; neither appears in the
-task commands, so the graph has no gate recursion. No status/modification
-cache skips a task after source, example, or dependency
-changes. The suite runs once in `checks.tests`; focused testing isn't a
-second full-suite leaf.
-
-The runner snapshots tracked and non-ignored untracked files before staging
-and retains SHA-256 manifests in `.runtime/gate`. `.gitignore` owns scratch
-exclusions; `nix/source.nix` consumes the same literal root paths for consumer
-sources. Formatter/static scans use the admitted candidate files or their
-snapshot. Runtime and devenv state stay outside those inputs.
-
-The flake check uses a direct nix-unit expression with supplied sources, a
-private local evaluation store, empty substituters, disabled fallback, and
-the Nix build sandbox. It doesn't assign or export HOME. The outer gate also
-requests offline operation and disables remote builders. Missing local
-dependencies fail instead of fetching during the gate.
-
-CI is configured in `.github/workflows/check.yml`. It installs Nix 2.35.1 and
-the devenv CLI from the same locked devenv revision, then enters the shared shell.
-The [checkout action](https://github.com/actions/checkout/blob/3d3c42e5aac5ba805825da76410c181273ba90b1/action.yml)
-and [Nix installer](https://github.com/cachix/install-nix-action/blob/75c75c31ebece974e48ebc36b4ad125bd97bd97b/action.yml)
-are pinned to inspected commits. The installer receives an explicit Nix release
-URL, enables the sandbox, and disables its substitution override. No private cache
-or separately configured secret is required.
-
-Preparation runs `devenv shell python3 tools/workspace.py prepare`. It snapshots
-the admitted candidate, evaluates the native check derivations, reads the pinned
-Nix 2.35.1 version 4 derivation JSON, and builds their direct input derivations.
-It rejects unsupported JSON versions and dynamic dependency outputs. It doesn't
-build the check outputs or execute the suite. Ordinary fetching is allowed here.
-The subsequent `devenv test` runs the same full gate described above, offline with
-no substitution/fallback or remote builder recovery. There is no second suite leaf,
-workflow dispatch, publication, or deployment. Local verification doesn't establish
-a remote CI run. Action bootstrapping hasn't been executed on this host.
-
-Both Linux systems remain declared. Native build/test evidence is
-x86_64-linux. Evaluation of aarch64-linux doesn't establish execution there.
-The host's Lix evaluator doesn't establish library compatibility on Lix.
-
-Upstream MIT notices remain in the patched source. No project licensing
-policy was found, and no policy compatibility or project license is claimed.
-
-References: [pinned exports](https://github.com/kleisli-io/nix-effects/blob/55ec2657c3c37e178c7730992a0f510739c1f945/default.nix),
-[Nix builtins](https://nix.dev/manual/nix/2.25/language/builtins),
-[operators](https://nix.dev/manual/nix/2.25/language/operators),
-[syntax](https://nix.dev/manual/nix/2.25/language/syntax),
-[selected evaluator manual](https://nix.dev/manual/nix/2.35/).
+Both Linux systems remain declared. Native build/test evidence is x86_64-linux.
+Evaluation of aarch64-linux doesn't establish execution there. The host's Lix
+evaluator doesn't establish library compatibility on Lix. Local gate verification
+doesn't establish a remote CI run or action bootstrapping. See
+[Development](development.md) for the configured CI path and its limits.
