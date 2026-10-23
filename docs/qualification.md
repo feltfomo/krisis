@@ -1,17 +1,15 @@
 # Qualified boundary and development contract
 
-Krisis still exports the Axiom-based API in [README.md](README.md). This
-contract records executable qualification for its replacement. The small
-interpreters under `tests/qualification` are fixtures, not another public
-library. The typed core must implement these contracts before replacing
-the existing API.
-
+Krisis exports the typed diagnostic core documented in [README.md](README.md).
+This contract records the supported dependency boundary and development gate.
+The small interpreters under `tests/qualification` remain mechanism regressions;
+they aren't production APIs or collector cost evidence.
 
 ## Dependency and supported types
 
 `nix/dependencies.nix` applies `patches/nix-effects-validation.patch` to
 nix-effects `55ec2657c3c37e178c7730992a0f510739c1f945`, then imports its
-curated public value. Qualification and future library imports must use
+curated public value. Qualification and library imports must use
 this owner. The patched source is also available through the flake's
 `packages.<system>.qualified-nix-effects`. Consumer imports use no private
 paths, `exposeInternals`, or experimental namespaces.
@@ -27,7 +25,12 @@ The bridge uses effectful validation and owns every emitted `typeCheck`
 event as failure evidence. It doesn't recheck an event's value or infer
 validity from its continuation. Required nullable fields must exist. A
 missing-field event remains a failure even when its type accepts null.
-The public `deriveBounce` handler remains installed.
+The public `deriveBounce` handler remains installed. On a failure event the
+adapter demands `builtins.typeOf param.value` before emitting a diagnostic.
+This forces only the failed value's outer shape and preserves thrown inputs
+that upstream kernel membership can otherwise describe as rejection. Missing
+and extra-field events carry upstream's null placeholder. No raw value is
+stored in the diagnostic.
 
 At each closed record, extra names produce individual `extra-field` events
 in lexical order, then declared fields are visited in lexical order. Lists
@@ -52,9 +55,11 @@ constructor metadata. Descriptor `openExtras` continues to permit extras.
 General indexed/dependent datatypes, proof terms, arbitrary custom type
 objects, and third-party verifier callbacks aren't admitted.
 
-The fixture bridge admits descriptions through its supported constructor
-owner and explicitly rejects raw unsupported descriptions. Its admission
-marker isn't a proof or security boundary. Kernel checking proves facts
+The production adapter admits descriptions through `validation.types`, which
+closes over the supported upstream constructors. Raw upstream and custom type
+objects are rejected. Its eliminator shape isn't an unforgeable brand, proof,
+or security boundary. The fixture bridge's marker isn't the production API.
+Kernel checking proves facts
 about its represented fragment; a host predicate isn't kernel proof
 evidence for arbitrary Nix code. A thunk carrier's shape doesn't establish
 the type of its captured value.
@@ -80,12 +85,17 @@ acceptance.
 Path segments are `{ field = name; }`, `{ index = n; }`, and
 `{ variant = tag; }`. Retain other positions as `{ upstream = position; }`.
 Quoted names remain exact strings; presentation must quote them
-unambiguously. Indexes are zero-based and nonnegative. Blame paths don't
+unambiguously. Indexes are zero-based and nonnegative. Upstream positions use a
+closed scalar projection of the pinned Position metadata, with validated marker,
+tag, segment, intent, rule, and tag-specific name/index/layer parameters. Absent
+parameters normalize to null. Unfamiliar tags retain their common metadata without
+arbitrary fields. The path owner rejects unknown fields before inspecting values;
+normalization and diagnostic presentation share that owner. Blame paths don't
 authorize inspecting the original payload.
 
 ## Handler, scope, and policy contracts
 
-Core effects will use `krisis.emit`, `krisis.fail`, and `krisis.context`.
+Core effects use `krisis.emit`, `krisis.fail`, and `krisis.context`.
 Fixtures use a separate `qualification` namespace. Handlers are keyed by
 strings. Krisis owns its keys; composition must reject collisions rather
 than silently overwrite caller handlers. Unknown effects rotate outward
@@ -131,8 +141,9 @@ reader updates aren't restoring scopes.
 | Safe inspection | Bounds and declared shallow/prefix observations | Opaque attr values, derivation internals, omitted elements |
 
 Unknown options fail at construction. Deferred checks execute when the
-corresponding projection is requested. Summaries mustn't inspect unused
-location defaults. Preserve callback exceptions with `builtins.addErrorContext`
+corresponding projection is requested. This includes `validation.check` locations
+on successful input and collected failures. Type/code checks and unknown control
+options remain immediate. Summaries mustn't inspect unused location defaults. Preserve callback exceptions with `builtins.addErrorContext`
 around the expression actually forced. Catch-all exception conversion isn't
 supported.
 
@@ -141,9 +152,8 @@ supported.
 Both environments select Nix 2.35.1 and nix-unit 2.35.1 through
 `nix/toolchain.nix` from nixpkgs
 `f13ff45afd1bb73e640eaa08a7066dbed07e3238`. `tools/workspace.py` enforces
-exact nixpkgs lock identity and executable identities. Axiom is temporary,
-pinned at `d56208631f0b89b8ff0a115105ad385017aaef23`. The original locked
-Axiom lacked APIs required by the old tests; it wasn't a passing baseline.
+exact nixpkgs lock identity and executable identities. The active dependency
+graph and public import contract use only the corrected effect dependency.
 
 Use the installed devenv 2.4.0 CLI. Its module input is locked from `v2.4.0`;
 that source advertises module version 2.3.1. The version notice is upstream

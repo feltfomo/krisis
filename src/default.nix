@@ -1,42 +1,56 @@
-{ lib, axiom }:
+{ lib, fx }:
 let
-  safe = import ./safe-render.nix {
-    inherit lib;
-    inherit (axiom) identity validation schema;
+  types = import ./types.nix { inherit fx; };
+  path = import ./path.nix { inherit lib types; };
+  diagnostic = import ./diagnostics.nix {
+    inherit fx types path;
   };
-  diagnostics = import ./diagnostics.nix {
-    inherit lib;
-    inherit (axiom) validation schema canonical;
+  render = import ./render.nix { inherit lib diagnostic path; };
+  report = import ./report.nix {
+    inherit
+      lib
+      fx
+      diagnostic
+      render
+      types
+      ;
   };
-  types = import ./types.nix {
-    inherit lib;
-    inherit (axiom) validation;
-    inherit (diagnostics) mkDiagnostic;
-  };
-  suggestions = import ./suggestions.nix { inherit lib; };
 in
 {
-  inherit (safe)
-    safeRender
-    safeRenderWith
-    safeShape
-    safeShapeWith
-    safeIdentity
-    ;
-  inherit (types) validateType renderPath;
-  inherit (suggestions) editDistance suggest suggestWith;
-  inherit (diagnostics)
-    allowedSeverities
-    qualifyCode
-    mkDiagnostic
-    mkDiagnosticFactory
-    renderDiagnostics
-    throwDiagnostics
-    renderPlain
-    mkReporter
-    summarizeDiagnostics
-    collectDiagnostics
-    optionalDiagnostic
-    withErrorContext
-    ;
+  diagnostic = { inherit (diagnostic) make factory types; };
+  path = {
+    inherit (path)
+      normalize
+      render
+      field
+      index
+      variant
+      ;
+  };
+  inherit render;
+  report = {
+    inherit (report)
+      emit
+      fail
+      withContext
+      run
+      handlers
+      ;
+  };
+  validation = import ./validation.nix {
+    inherit
+      fx
+      diagnostic
+      report
+      path
+      ;
+  };
+  inspect = import ./inspect.nix { inherit lib types; };
+  suggest = import ./suggestions.nix { inherit lib; };
+  nix.withErrorContext =
+    message: value:
+    if !builtins.isString message then
+      throw "krisis: error context must be a string"
+    else
+      builtins.addErrorContext message value;
 }

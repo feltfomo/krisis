@@ -1,278 +1,705 @@
-{ lib, axiom }:
+{ lib, fx }:
 let
-  k = import ../src { inherit lib axiom; };
-  poison = throw "baseline poison";
-  t = axiom.types;
-  check = k.validateType {
-    type = t.record {
-      ports = t.listOf t.int;
-      payload = t.opaque;
-    };
-    code = "service/shape";
-    label = "server";
-    path = [ "config" ];
-  };
-  result = check {
-    ports = [
-      false
-      "x"
-    ];
-    payload = poison;
-  };
-  reporter = k.mkReporter { formatDiagnostic = k.renderPlain; };
-  error = expr: {
+  k = import ../src { inherit lib fx; };
+  T = k.validation.types;
+  poison = throw "effect poison";
+  err = expr: {
     inherit expr;
-    expectedError = {
-      type = "ThrownError";
-    };
+    expectedError.type = "ThrownError";
   };
-  summary = k.summarizeDiagnostics [
+  d = code: severity: {
+    inherit code severity;
+    message = poison;
+    primary = poison;
+    related = poison;
+    help = poison;
+    notes = poison;
+    context = poison;
+  };
+  emit = code: severity: k.report.emit (d code severity);
+  run = k.report.run { };
+  result = run (fx.bind (emit "a" "error") (_: fx.bind (emit "b" "warning") (_: fx.pure poison)));
+  check =
+    type: value:
+    k.validation.check {
+      inherit type;
+      code = "shape";
+    } value;
+  checked = computation: fx.state.forceThunk (run computation).outcome.value;
+  paths = report: map (item: item.context.validation.path) report.diagnostics;
+  located = run (
+    check
+      (T.Record {
+        "a.b" = T.ListOf (T.Variant { Some = T.Int; });
+        nullable = T.Maybe T.Int;
+      })
+      {
+        "a.b" = [
+          {
+            _tag = "Some";
+            value = false;
+          }
+        ];
+        extra = poison;
+      }
+  );
+  positive = T.refined "Positive" T.Int (n: n > 0);
+  product = T.Record {
+    x = positive;
+    y = positive;
+  };
+  large =
+    count:
+    let
+      program = builtins.foldl' (acc: n: fx.bind acc (_: emit (toString n) "warning")) (fx.pure {
+        payload = poison;
+      }) (builtins.genList (n: n) count);
+      r = run program;
+    in
     {
-      code = "a";
-      severity = "error";
-      message = poison;
-      context = poison;
-    }
-    {
-      code = "a";
-      severity = "warning";
-      message = poison;
-      context = poison;
-    }
-    {
-      code = "b";
-      severity = "error";
-      message = poison;
-      context = poison;
-    }
-  ];
+      inherit (r.summary) total;
+      codes = map (item: item.code) r.diagnostics;
+      outcome = r.outcome._con;
+    };
+  scoped = run (
+    k.report.withContext
+      {
+        namespace = "root";
+        primary = poison;
+      }
+      (
+        fx.bind (emit "first" "warning") (
+          _:
+          fx.bind
+            (k.report.withContext {
+              namespace = "nested";
+              primary = poison;
+            } (fx.bind (fx.send "outer" null) (_: emit "second" "warning")))
+            (
+              _:
+              fx.bind (emit "third" "warning") (
+                _:
+                k.report.withContext {
+                  namespace = "sibling";
+                  primary = poison;
+                } (emit "fourth" "warning")
+              )
+            )
+        )
+      )
+  );
+  scopedOuter =
+    k.report.run
+      {
+        handlers.outer = { state, ... }: {
+          inherit state;
+          resume = null;
+        };
+      }
+      (
+        k.report.withContext
+          {
+            namespace = "root";
+            primary = poison;
+          }
+          (
+            fx.bind (emit "first" "warning") (
+              _:
+              fx.bind
+                (k.report.withContext { namespace = "nested"; } (
+                  fx.bind (fx.send "outer" null) (_: emit "second" "warning")
+                ))
+                (
+                  _:
+                  fx.bind (emit "third" "warning") (
+                    _: k.report.withContext { namespace = "sibling"; } (emit "fourth" "warning")
+                  )
+                )
+            )
+          )
+      );
+  sharedProgram =
+    fx.bind
+      (k.report.emit {
+        code = "first";
+        severity = "warning";
+        message = "notice";
+      })
+      (
+        _:
+        fx.bind (k.report.emit {
+          code = "second";
+          message = "blocking";
+        }) (_: fx.pure { payload = poison; })
+      );
+  basic = import ../examples/basic.nix { inherit lib fx; };
 in
 {
-  test-type-paths = {
-    expr = map (d: d.context.validation.path) result.diagnostics;
-    expected = [
-      [
-        "config"
-        "ports"
-        0
-      ]
-      [
-        "config"
-        "ports"
-        1
-      ]
-    ];
-  };
-  test-type-codes = {
-    expr = map (d: d.code) result.diagnostics;
-    expected = [
-      "service/shape"
-      "service/shape"
-    ];
-  };
-  test-type-render = {
-    expr = reporter.renderOne (builtins.head result.diagnostics);
-    expected = "[service/shape] server: $.config.ports[0]: expected int; got bool";
-  };
-  test-type-success = {
-    expr = axiom.validation.isSuccess (check {
-      ports = [ 1 ];
-      payload = poison;
-    });
-    expected = true;
-  };
-  test-failure-fields = {
-    expr = builtins.attrNames result;
-    expected = [ "diagnostics" ];
-  };
-  test-bad-type-code = error (
-    k.validateType {
-      type = t.opaque;
-      code = "";
-    } poison
-  );
-  test-bad-type-label = error (
-    k.validateType {
-      type = t.opaque;
-      code = "x";
-      label = 1;
-    } poison
-  );
-  test-bad-type-path = error (
-    k.validateType {
-      type = t.opaque;
-      code = "x";
-      path = [ (-1) ];
-    } poison
-  );
-  test-thrown-type-input = {
-    expr = k.validateType {
-      type = t.int;
-      code = "x";
-    } poison;
-    expectedError = {
-      type = "ThrownError";
-      msg = "baseline poison";
+  test-order-and-failure = {
+    expr = {
+      codes = map (item: item.code) result.diagnostics;
+      inherit (result) outcome;
+    };
+    expected = {
+      codes = [
+        "a"
+        "b"
+      ];
+      outcome._con = "Failure";
     };
   };
-  test-quoted-path = {
-    expr = k.renderPath [
-      "field"
-      0
-      "a.b"
-      "if"
-    ];
-    expected = ''$.field[0]."a.b"."if"'';
+  test-warning-success = {
+    expr = (run (fx.bind (emit "x" "warning") (_: fx.pure poison))).outcome._con;
+    expected = "Success";
   };
-  test-root-path = {
-    expr = k.renderPath [ ];
-    expected = "$";
-  };
-  test-negative-path = error (k.renderPath [ (-1) ]);
-  test-bool-path = error (k.renderPath [ true ]);
-  test-lazy-finish = {
-    expr = builtins.attrNames (reporter.finish (axiom.validation.success { payload = poison; }));
+  test-return-opaque = {
+    expr = builtins.attrNames (fx.state.forceThunk (run (fx.pure { payload = poison; })).outcome.value);
     expected = [ "payload" ];
   };
-  test-failed-finish = error (
-    reporter.finish {
-      inherit (result) diagnostics;
-      value = poison;
-    }
-  );
-  test-summary = {
-    expr = summary;
+  test-after-event-opaque = {
+    expr = builtins.attrNames (
+      fx.state.forceThunk
+        (run (fx.bind (emit "x" "warning") (_: fx.pure { payload = poison; }))).outcome.value
+    );
+    expected = [ "payload" ];
+  };
+  test-emit-resumes-unit = {
+    expr = fx.state.forceThunk (run (emit "x" "warning")).outcome.value;
+    expected = null;
+  };
+  test-explicit-failure = {
+    expr = (run (fx.bind (k.report.fail (d "x" "info")) (_: poison))).outcome;
+    expected._con = "Failure";
+  };
+  test-explicit-failure-no-value = {
+    expr = builtins.attrNames (run (fx.bind (k.report.fail (d "x" "info")) (_: poison))).outcome;
+    expected = [ "_con" ];
+  };
+  test-policy = {
+    expr =
+      let
+        r = k.report.run {
+          policy = {
+            warningsAsErrors = true;
+            minimumSeverity = "error";
+            suppressCodes = [ "x" ];
+          };
+        } (emit "x" "warning");
+      in
+      {
+        inherit (r) outcome visibility summary;
+      };
     expected = {
-      total = 3;
-      bySeverity = {
-        error = 2;
-        warning = 1;
-        info = 0;
+      outcome._con = "Failure";
+      visibility = [
+        {
+          effectiveSeverity = "error";
+          originalSeverity = "warning";
+          visible = false;
+          suppressed = true;
+          belowThreshold = false;
+        }
+      ];
+      summary = {
+        total = 1;
+        hasErrors = true;
+        bySeverity = {
+          error = 1;
+          warning = 0;
+          info = 0;
+        };
+        byCode.x = 1;
       };
-      byCode = {
-        a = 2;
-        b = 1;
-      };
-      hasErrors = true;
     };
   };
-  test-empty-summary = {
-    expr = k.summarizeDiagnostics [ ];
+  test-threshold = {
+    expr = (k.report.run { policy.minimumSeverity = "error"; } (emit "x" "warning")).visibility;
+    expected = [
+      {
+        effectiveSeverity = "warning";
+        originalSeverity = "warning";
+        visible = false;
+        suppressed = false;
+        belowThreshold = true;
+      }
+    ];
+  };
+  test-hidden-error = {
+    expr = (k.report.run { policy.suppressCodes = [ "x" ]; } (emit "x" "error")).outcome;
+    expected._con = "Failure";
+  };
+  test-empty-policy-control = err (k.report.run { policy.warningsAsErrors = 1; } (fx.pure 1));
+  test-policy-unknown = err (k.report.run { policy.unknown = poison; } (fx.pure 1));
+  test-same-program-collecting = {
+    expr =
+      let
+        r = run sharedProgram;
+      in
+      {
+        codes = map (item: item.code) r.diagnostics;
+        inherit (r) outcome;
+      };
+    expected = {
+      codes = [
+        "first"
+        "second"
+      ];
+      outcome._con = "Failure";
+    };
+  };
+  test-same-program-strict = {
+    expr = k.report.run { mode = "strict"; } sharedProgram;
+    expectedError = {
+      type = "ThrownError";
+      msg = "error \\[second\\] blocking";
+    };
+  };
+  test-strict-error = {
+    expr = k.report.run { mode = "strict"; } (
+      fx.bind (k.report.emit {
+        code = "strict";
+        message = "first";
+      }) (_: poison)
+    );
+    expectedError = {
+      type = "ThrownError";
+      msg = "error \\[strict\\] first";
+    };
+  };
+  test-strict-warning = {
+    expr =
+      (k.report.run { mode = "strict"; } (fx.bind (emit "x" "warning") (_: fx.pure 7))).outcome._con;
+    expected = "Success";
+  };
+  test-strict-promoted = err (
+    k.report.run
+      {
+        mode = "strict";
+        policy = {
+          warningsAsErrors = true;
+          suppressCodes = [ "x" ];
+        };
+      }
+      (
+        k.report.emit {
+          code = "x";
+          severity = "warning";
+          message = "promoted";
+        }
+      )
+  );
+  test-strict-fail-info = err (
+    k.report.run { mode = "strict"; } (
+      k.report.fail {
+        code = "x";
+        severity = "info";
+        message = "explicit";
+      }
+    )
+  );
+  test-collision = err (k.report.run { handlers."krisis.emit" = poison; } (fx.pure 1));
+  test-rotating-report-inside-outer-interpreter = {
+    expr =
+      let
+        scopedReport = fx.effects.scope.runWith (k.report.handlers.collecting { }) (
+          k.report.withContext
+            {
+              namespace = "scoped";
+              primary = poison;
+            }
+            (
+              fx.bind (fx.send "outer" null) (_: fx.bind (emit "x" "warning") (_: fx.pure { payload = poison; }))
+            )
+        );
+        outer = fx.handle {
+          state = 0;
+          handlers.outer = { state, ... }: {
+            state = state + 1;
+            resume = null;
+          };
+        } scopedReport;
+      in
+      {
+        outerCount = outer.state;
+        codes = map (item: item.code) outer.value.diagnostics;
+        fields = builtins.attrNames (fx.state.forceThunk outer.value.outcome.value);
+      };
+    expected = {
+      outerCount = 1;
+      codes = [ "scoped/x" ];
+      fields = [ "payload" ];
+    };
+  };
+  test-outer-state-preserved = {
+    expr =
+      let
+        bundle = k.report.handlers.collecting {
+          handlers.outer = { state, ... }: {
+            state = state // {
+              outerCount = (state.outerCount or 0) + 1;
+            };
+            resume = null;
+          };
+        };
+        config = bundle // {
+          return = value: state: {
+            count = state.outerCount;
+            report = bundle.return value state;
+          };
+        };
+        r = fx.handle config (
+          fx.bind (fx.send "outer" null) (_: fx.bind (emit "x" "warning") (_: fx.send "outer" null))
+        );
+      in
+      {
+        inherit (r) count;
+        total = r.report.summary.total;
+      };
+    expected = {
+      count = 2;
+      total = 1;
+    };
+  };
+  test-checked-invalid-fields = {
+    expr =
+      let
+        bundle = k.report.handlers.collecting { };
+        result = fx.handle (bundle // { return = value: _state: value; }) (check T.Int false);
+      in
+      builtins.attrNames result;
+    expected = [ "_con" ];
+  };
+  test-handler-composition = {
+    expr =
+      let
+        bundle = k.report.handlers.collecting {
+          handlers.outer = { state, ... }: {
+            inherit state;
+            resume = 42;
+          };
+        };
+        r = fx.handle bundle (fx.bind (emit "x" "warning") (_: fx.send "outer" null));
+      in
+      fx.state.forceThunk r.outcome.value;
+    expected = 42;
+  };
+  test-scope-restoration = {
+    expr = map (item: item.code) scopedOuter.diagnostics;
+    expected = [
+      "root/first"
+      "nested/second"
+      "root/third"
+      "sibling/fourth"
+    ];
+  };
+  test-unhandled-outer = {
+    expr = scoped.summary.total;
+    expectedError = {
+      type = "ThrownError";
+      msg = "unhandled effect 'outer'";
+    };
+  };
+  test-scope-unknown = err (run (k.report.withContext { unknown = poison; } (fx.pure 1)));
+  test-scope-invalid = err (run (k.report.withContext { namespace = ""; } (fx.pure 1)));
+  test-scope-location-defaults = {
+    expr =
+      let
+        r = run (
+          k.report.withContext { primary.source = "root"; } (
+            k.report.withContext { primary.label = "nested"; } (
+              k.report.emit {
+                code = "x";
+                message = "x";
+                primary.label = "call";
+              }
+            )
+          )
+        );
+      in
+      (builtins.head r.diagnostics).primary;
+    expected = {
+      label = "call";
+      source = "root";
+      path = [ ];
+      range = null;
+    };
+  };
+  test-zero-events = {
+    expr = large 0;
     expected = {
       total = 0;
-      bySeverity = {
-        error = 0;
-        warning = 0;
-        info = 0;
-      };
-      byCode = { };
-      hasErrors = false;
+      codes = [ ];
+      outcome = "Success";
     };
   };
-  test-bad-summary-severity =
-    error
-      (k.summarizeDiagnostics [
-        {
-          code = "x";
-          severity = "fatal";
-          context = poison;
-        }
-      ]).total;
-  test-bad-summary-code =
-    error
-      (k.summarizeDiagnostics [
-        {
-          code = "";
-          severity = "error";
-          message = poison;
-        }
-      ]).total;
-  test-root-render = {
-    expr = k.safeRender poison;
-    expected = "<unrenderable value>";
+  test-small-events = {
+    expr = large 3;
+    expected = {
+      total = 3;
+      codes = [
+        "0"
+        "1"
+        "2"
+      ];
+      outcome = "Success";
+    };
   };
-  test-root-shape = {
-    expr = k.safeShape poison;
-    expected = "<unrenderable value>";
+  test-ten-thousand-events = {
+    expr = large 10000;
+    expected = {
+      total = 10000;
+      codes = builtins.genList toString 10000;
+      outcome = "Success";
+    };
   };
-  test-custom-fallback = {
-    expr = k.safeRenderWith { fallback = "hidden"; } poison;
-    expected = "hidden";
-  };
-  test-function-options = error (k.safeRenderWith { maxListItems = -1; } (_: poison));
-  test-function-shape-options = error (k.safeShapeWith { maxAttrs = -1; } (_: poison));
-  test-root-options = error (k.safeRenderWith { maxListItems = -1; } poison);
-  test-lazy-tail = {
-    expr = k.safeRenderWith { maxListItems = 1; } [
-      1
-      poison
+  test-located-failures = {
+    expr = paths located;
+    expected = [
+      [ { field = "extra"; } ]
+      [
+        { field = "a.b"; }
+        { index = 0; }
+        { variant = "Some"; }
+      ]
+      [ { field = "nullable"; } ]
     ];
-    expected = "[1] (+1 more)";
   };
-  test-zero-prefix = {
-    expr = k.safeRenderWith { maxListItems = 0; } [ poison ];
-    expected = "[] (+1 more)";
+  test-failure-reasons = {
+    expr = map (item: item.context.validation.reason) located.diagnostics;
+    expected = [
+      "extra-field"
+      "shape-mismatch"
+      "missing-field"
+    ];
   };
-  test-derivation-name = {
-    expr = k.safeRender {
-      type = "derivation";
-      name = poison;
-      outPath = poison;
+  test-failure-no-input = {
+    expr = map (item: builtins.attrNames item.context.validation) located.diagnostics;
+    expected = builtins.genList (_: [
+      "actual"
+      "expected"
+      "path"
+      "reason"
+    ]) 3;
+  };
+  test-valid-value-fields = {
+    expr = builtins.attrNames (checked (check T.Int 1));
+    expected = [
+      "_con"
+      "value"
+    ];
+  };
+  test-independent = {
+    expr =
+      map (item: item.code)
+        (run (
+          k.validation.all [
+            (k.validation.check {
+              type = T.Int;
+              code = "a";
+            } false)
+            (k.validation.check {
+              type = T.String;
+              code = "b";
+            } 1)
+          ]
+        )).diagnostics;
+    expected = [
+      "a"
+      "b"
+    ];
+  };
+  test-dependent-skips = {
+    expr = (run (k.validation.andThen (_: poison) (check T.Int false))).outcome;
+    expected._con = "Failure";
+  };
+  test-independent-then-dependent-skips = {
+    expr =
+      (run (
+        k.validation.andThen (_: poison) (
+          k.validation.all [
+            (check T.Int false)
+            (check T.String 1)
+          ]
+        )
+      )).summary.total;
+    expected = 2;
+  };
+  test-dependent-valid = {
+    expr =
+      fx.state.forceThunk
+        (checked (k.validation.andThen (n: check T.Int (n + 1)) (check T.Int 1))).value;
+    expected = 2;
+  };
+  test-all-values = {
+    expr =
+      fx.state.forceThunk
+        (checked (
+          k.validation.all [
+            (check T.Int 1)
+            (check T.String "x")
+          ]
+        )).value;
+    expected = [
+      1
+      "x"
+    ];
+  };
+  test-all-empty = {
+    expr = fx.state.forceThunk (checked (k.validation.all [ ])).value;
+    expected = [ ];
+  };
+  test-opaque-checked = {
+    expr = builtins.attrNames (
+      fx.state.forceThunk (checked (check (T.Record { payload = T.Any; }) { payload = poison; })).value
+    );
+    expected = [ "payload" ];
+  };
+  test-opaque-root = {
+    expr = (checked (check T.Any poison))._con;
+    expected = "Valid";
+  };
+  test-unsupported-nullable-child = err (run (check (T.Maybe fx.types.Int) null));
+  test-unsupported-empty-list-child = err (run (check (T.ListOf fx.types.Int) [ ]));
+  test-unsupported-unselected-branch = err (
+    run (
+      check
+        (T.Variant {
+          Good = T.Int;
+          Bad = fx.types.String;
+        })
+        {
+          _tag = "Good";
+          value = 1;
+        }
+    )
+  );
+  test-unsupported = err (run (check fx.types.Int 1));
+  test-bad-check-code = err (
+    run (
+      k.validation.check {
+        type = T.Any;
+        code = "";
+      } poison
+    )
+  );
+  test-bad-check-location = err (
+    k.render.project (
+      builtins.head
+        (run (
+          k.validation.check {
+            type = T.Int;
+            code = "x";
+            location.label = 1;
+          } false
+        )).diagnostics
+    )
+  );
+  test-refinement-paths = {
+    expr = paths (
+      run (
+        check (T.refined "Product" product (_: true)) {
+          x = -1;
+          y = -2;
+        }
+      )
+    );
+    expected = [
+      [ { field = "x"; } ]
+      [ { field = "y"; } ]
+    ];
+  };
+  test-predicate-skipped = {
+    expr =
+      (run (
+        check (T.refined "Product" product (_: poison)) {
+          x = -1;
+          y = -2;
+        }
+      )).summary.total;
+    expected = 2;
+  };
+  test-mixed-refinement = {
+    expr =
+      (run (check (T.refine (T.refined "OverTen" T.Int (n: n > 10)) fx.types.positiveInt) 5))
+      .summary.total;
+    expected = 1;
+  };
+  test-thrown-input = {
+    expr = (run (check T.Int poison)).summary.total;
+    expectedError = {
+      type = "ThrownError";
+      msg = "effect poison";
     };
-    expected = "<derivation ?>";
   };
-  test-suggestions = {
+  test-thrown-predicate = {
+    expr = (run (check (T.refine T.Int (_: poison)) 1)).summary.total;
+    expectedError = {
+      type = "ThrownError";
+      msg = "effect poison";
+    };
+  };
+  test-null-bypass = {
+    expr = (checked (check (T.Maybe (T.refine T.Int (_: poison))) null))._con;
+    expected = "Valid";
+  };
+  test-either = {
+    expr = paths (
+      run (
+        check (T.Either T.Int T.String) {
+          _tag = "Right";
+          value = false;
+        }
+      )
+    );
+    expected = [ [ { variant = "Right"; } ] ];
+  };
+  test-generated-contracts = {
     expr =
       map
         (
-          input:
-          k.suggest input [
-            "foo"
-            "bar"
-            "bat"
-            "barrel"
-            "fool"
-            ""
-          ]
+          spec:
+          map (con: {
+            inherit (con) name;
+            fields = map (field: field.name) con.fields;
+          }) (fx.types.generic.datatype.datatypeInfo spec.T).constructors
         )
         [
-          "foo"
-          "fou"
-          "baz"
-          "barrels"
-          "unrelated"
-          ""
+          k.diagnostic.types.checked
+          k.diagnostic.types.outcome
         ];
     expected = [
-      "foo"
-      "foo"
-      "bar"
-      "barrel"
-      null
-      ""
+      [
+        {
+          name = "Valid";
+          fields = [ "value" ];
+        }
+        {
+          name = "Invalid";
+          fields = [ ];
+        }
+      ]
+      [
+        {
+          name = "Success";
+          fields = [ "value" ];
+        }
+        {
+          name = "Failure";
+          fields = [ ];
+        }
+      ]
     ];
   };
-  test-suggestion-tie = {
-    expr = k.suggest "cat" [
-      "bat"
-      "car"
-    ];
-    expected = "bat";
-  };
-  test-suggestion-bound = {
-    expr = [
-      (k.suggest "abc" [ "def" ])
-      (k.suggestWith { maxDistance = 3; } "abc" [ "def" ])
-    ];
-    expected = [
-      null
-      "def"
-    ];
-  };
-  test-bad-suggestion-bound = error (k.suggestWith { maxDistance = -1; } "x" [ ]);
-  test-bad-suggestion-value = error (k.suggest "x" [ 1 ]);
-  test-distance = {
-    expr = k.editDistance "kitten" "sitting";
-    expected = 3;
+  test-basic-example = {
+    expr = {
+      inherit (basic.summary) total;
+      outcome = basic.outcome._con;
+      codes = map (item: item.code) basic.diagnostics;
+    };
+    expected = {
+      total = 1;
+      outcome = "Failure";
+      codes = [ "service/shape" ];
+    };
   };
 }

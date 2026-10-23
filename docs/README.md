@@ -1,282 +1,268 @@
 # Krisis
 
-Krisis is the shared diagnostic and safe-rendering library for its consumers, lexicon among them. It provides validated diagnostic records, caller-owned reporting policy, contextual evaluation, collection helpers, and bounded descriptions of values that may contain derivations, secrets, or throwing fields.
+Krisis constructs typed diagnostics and interprets diagnostic computations through
+nix-effects. Diagnostic data, computation, reporting policy, and presentation have
+separate owners. Context and application values stay opaque.
 
-It is a maintainer API, not an aspect-authoring surface.
+## Import and basic use
 
-## Import
+Both imports take `{ lib, fx }`. `fx` must be the corrected nix-effects instance
+provided by `nix/dependencies.nix`, described in [qualification.md](qualification.md).
+The flake exports `lib.krisis`; it doesn't re-export nix-effects.
 
 ```nix
-# share the axiom version used by the consuming subsystem
-krisis = inputs.krisis.lib.krisis { inherit lib axiom; };
-
-# or directly, from a checkout of this repo
-krisis = import ./src { inherit lib axiom; };
+k = inputs.krisis.lib.krisis { inherit lib fx; };
+# or
+k = import ./src { inherit lib fx; };
 ```
 
-## Exports
-
-| Function | Purpose |
-| --- | --- |
-| `mkDiagnostic` | Validate and construct one diagnostic record. |
-| `mkDiagnosticFactory` | Bind default severity, code prefix, and primary location. |
-| `qualifyCode` | Join a diagnostic namespace and local code. |
-| `allowedSeverities` | Supported severity names. |
-| `mkReporter` | Bind rendering, finishing validation results, and throwing policy once. |
-| `validateType` | Adapt an Axiom runtime type into caller-coded diagnostics. |
-| `renderPath` | Render zero-based structured validation paths. |
-| `summarizeDiagnostics` | Count severities and codes without rendering messages or context. |
-| `suggest`, `suggestWith` | Select a nearby vocabulary member with stable tie handling. |
-| `editDistance` | Re-export nixpkgs' Levenshtein implementation. |
-| `renderDiagnostics` | Render a list with caller-provided formatting. |
-| `throwDiagnostics` | Render and throw a list. |
-| `renderPlain` | Stock one-diagnostic code/label/message rendering with notes and help. |
-| `collectDiagnostics` | Flatten ordered diagnostic groups. |
-| `optionalDiagnostic` | Emit zero or one diagnostic from a condition. |
-| `withErrorContext` | Add context while preserving the original Nix exception. |
-| `safeRender` | Render bounded scalar information without traversing opaque payloads. |
-| `safeRenderWith` | Configure string and list bounds and fallback text. |
-| `safeShape` | Describe a type or shallow attrset shape. |
-| `safeShapeWith` | Configure the number of exposed attr names. |
-| `safeIdentity` | Prefer a label, then source, then shallow shape. |
-
-## Diagnostic schema
+[examples/basic.nix](../examples/basic.nix) is a runnable expression taking the
+same arguments. The test suite evaluates it. It checks a record with a refined
+port list, emits a located failure, and skips dependent work on invalid input.
 
 ```nix
-krisis.mkDiagnostic {
-  severity = "error";
-  code = "program/directory-source-missing";
-  message = "source does not exist in the flake";
+let
+  T = k.validation.types;
+  check = k.validation.check {
+    type = T.Record { ports = T.ListOf T.Int; payload = T.Any; };
+    code = "service/shape";
+    location.source = "caller-supplied.nix";
+  };
+in k.report.run {} (k.validation.andThen
+  (value: fx.pure value.ports)
+  (check { ports = [ 8080 false ]; payload = opaqueValue; }))
+```
+
+## Diagnostics and locations
+
+`diagnostic.make` accepts a closed record with required nonempty `code` and
+`message`. `severity` defaults to `"error"` and accepts `"error"`, `"warning"`, or
+`"info"`. The normalized fields are `severity`, `code`, `message`, `primary`,
+`related`, `notes`, `help`, and `context`. Their defaults are null for `primary`,
+`help`, and `context`, and empty lists for `related` and `notes`.
+
+```nix
+k.diagnostic.make {
+  severity = "warning";
+  code = "service/port";
+  message = "port isn't in the supported range";
   primary = {
-    label = "directories[0]";
-    source = "modules/aspects/example.nix";
+    label = "web";
+    source = "services.nix";
+    path = [ (k.path.field "ports") (k.path.index 0) ];
+    range = {
+      start = { line = 3; column = 5; };
+      end = { line = 3; column = 9; };
+    };
   };
-  secondaryLabels = [
-    {
-      label = "related declaration";
-      message = "also contributes to this path";
-    }
-  ];
-  notes = [ "git-backed flakes omit untracked files" ];
-  help = "add a tracked file or remove the declaration";
-  context.index = 0;
+  related = [ { location.label = "other declaration"; message = "also contributes"; } ];
+  notes = [ "ports are caller-owned configuration" ];
+  help = "choose another port";
+  context = opaqueValue;
 }
 ```
 
-Required fields are:
+A location accepts only `label`, `source`, `path`, and `range`, normalized to null,
+null, empty list, and null. It must have a label, source, or nonempty path. A range
+requires a source identifier. Coordinates are one-based line and column numbers;
+the end is exclusive and must be at or after the start. Krisis reads no source
+files and infers no provenance or byte/Unicode coordinate conversion.
 
-- `severity`, one of `error`, `warning`, or `info`;
-- non-empty `code`;
-- string `message`.
+Related entries contain a required `location` and an optional null-or-string
+`message`. Notes are strings; help is null or a string. Context has no inspection
+or presentation contract.
 
-`primary` accepts only optional string fields `label` and `source`.
+Construction checks field names, required field presence, code, and severity.
+It defers presentation checks until the field is requested. For example, a summary
+can count a diagnostic whose message throws, but requesting that message throws;
+a non-string message fails its deferred check. `render.project` requests and checks
+all presentation fields, detaching context first. Unknown constructor and control
+fields fail even if their values would otherwise remain unused.
 
-Each `secondaryLabels` entry accepts optional string fields `label`, `source`, and `message`, and must identify a label or source. `notes` must be a list of strings and `help` must be a string. `context` remains caller-shaped and stays lazy.
+`diagnostic.factory { namespace ? null; severity ? "error"; primary ? null; }`
+binds defaults and returns a diagnostic constructor. A nonnull namespace is a
+nonempty string joined to the local code with `/`. Call severity overrides the
+default. Call location fields override matching defaults, retaining other default
+fields. An explicit `primary = null` clears the default. Unused location defaults
+remain lazy.
 
-Unknown fields and malformed optional data fail at construction rather than reaching a renderer.
+`diagnostic.types` exposes the upstream descriptions `severity`, `nonempty`,
+`coordinate`, `point`, `range`, `location`, and `presentation`, plus generated
+`checked` and `outcome` datatype specifications. `presentation` describes the
+normalized record without context. These runtime contracts don't prove arbitrary
+host predicates. A thunk shape doesn't establish the captured value's type.
 
-## Diagnostic factories
+## Paths
 
-Use a factory when one subsystem emits several related diagnostics:
+`path.field name`, `path.index n`, and `path.variant tag` construct segments.
+`path.normalize` validates a list containing `{ field = name; }`, `{ index = n; }`,
+`{ variant = tag; }`, or `{ upstream = position; }`. Indexes are zero-based and
+nonnegative. The validation adapter retains other upstream positions structurally
+in `upstream`; it doesn't reinterpret their tag identities.
 
-```nix
-problem = krisis.mkDiagnosticFactory {
-  severity = "error";
-  codePrefix = "furnish";
-  primary.source = "src/furnish/core.nix";
-};
+An upstream position is a closed record with `_tag = "Position"`, nonempty string
+`tag`, `segment`, and `intent`, and optional null-or-string `rule`. The recognized
+parameter fields are `name`, `idx`, and `layer`, normalized to null when absent.
+`Field`, `Tag`, and `Case` require a string name; `Elem` and `Tuple` require a
+nonnegative index; `DConLayer` requires a nonnegative layer. These tags reject
+unrelated nonnull parameters. Other tags, including unfamiliar ones, retain their
+common metadata and require null parameters. Unknown fields are rejected before
+their values are inspected. Functions and nested payloads aren't position data.
+Normalization and diagnostic locations use this same typed boundary.
 
-problem {
-  code = "missing-executor";
-  message = "no executor matched";
-  primary.label = "kitty.conf";
-}
-```
+`path.render` starts with `$`, quotes exotic field names with Nix identifier
+escaping, renders indexes with brackets and variant tags as `#` followed by a JSON
+string. Other positions render only the declared scalar position fields as a JSON
+object inside angle brackets. No arbitrary attrset is serialized. Paths grant no
+authority to inspect the original value.
 
-The resulting code is `furnish/missing-executor`. Call-specific primary fields extend or override factory defaults.
+## Effects, reports, and policy
 
-## Reporters
+`report.emit diagnostic` describes an observation and resumes with null.
+`report.fail diagnostic` aborts the diagnostic interpreter, skips its continuation,
+and always fails. Use `fx.bind` and `fx.map` to compose computations; `|>` applies
+pure functions and doesn't bind effects.
 
-A reporter binds one subsystem's visible formatting policy:
+`report.run { policy ? {}; mode ? "collecting"; handlers ? {}; } computation`
+returns `diagnostics` in emission order, `summary`, `outcome`, and a parallel
+`visibility` list. The summary has `total`, `bySeverity`, `byCode`, and `hasErrors`.
+It inspects only the envelope. Diagnostics include hidden events.
 
-```nix
-reporter = krisis.mkReporter {
-  formatHeader = count: "example: ${toString count} error(s)";
-  formatDiagnostic = diagnostic:
-    "  - [${diagnostic.code}] ${diagnostic.message}";
-  separator = "\n";
-};
+The outcome is `{ _con = "Success"; value = Thunk a; }` or
+`{ _con = "Failure"; }`. Recover a requested successful value through
+`fx.state.forceThunk report.outcome.value`. Failure has no value field. Collected
+effective errors mark completion unsuccessful while the computation may continue.
+A warning-only run succeeds. Explicit failure remains unsuccessful even with an
+info diagnostic and no counted errors.
 
-text = reporter.render diagnostics;
-one = reporter.renderOne diagnostic;
-value = reporter.checked diagnostics successfulValue;
-```
+Policy accepts `warningsAsErrors`, default false; `minimumSeverity`, default
+`"info"`; and `suppressCodes`, default empty. Suppression matches exact code strings.
+Effective severity is determined first, then failure and counts, then visibility.
+Each visibility entry contains `originalSeverity`, `effectiveSeverity`, `suppressed`,
+`belowThreshold`, and `visible`. Visibility cannot erase failure or diagnostics.
 
-Reporter methods are:
+Strict mode throws on the first effective error or explicit failure, even if hidden.
+Warnings continue. It uses `render.plain`, which requests the shared presentation
+projection. A throwing presentation field therefore remains a real evaluation
+failure at this terminal boundary.
 
-- `render` and `renderOne`;
-- `fail` and `failOne`;
-- `checked`, which returns a value only when the diagnostic list is empty;
-- `finish result`, which unwraps an Axiom validation result or applies the reporter's failure policy.
+`report.withContext { namespace ? null; severity ? "error"; primary ? null; } body`
+provides dynamic defaults with public scope rotation. Only supplied fields override
+the enclosing scope. Nested namespace overrides replace the namespace; locations
+merge as factory defaults do. After exit the enclosing defaults are restored, and
+siblings are isolated. Explicit diagnostic fields override dynamic defaults.
+A previously normalized diagnostic already has explicit severity and primary fields.
 
-`formatHeader` defaults to no header. Returning `null` omits it. `separator` defaults to a newline.
+For a larger interpreter, pass extra handlers to `report.run`, or pass
+`report.handlers.collecting { policy ? {}; handlers ? {}; }` to `fx.handle`.
+`report.handlers.strict` has the same interface. These configurations own state
+`{ head; count; failed; }` and the return projection, and return a report. Extra
+handlers must preserve this state or update it without replacing its owned fields;
+put their own state under a separate field. Krisis owns `krisis.emit`, `krisis.fail`,
+and `krisis.context`. Composition through `handlers` rejects key collisions.
+Ordinary Nix `//` after obtaining a configuration can bypass that check and is the
+caller's responsibility. Unrelated effects reach supplied handlers or the outer
+interpreter's explicit unhandled-effect failure.
 
-A subsystem without its own format can pass `renderPlain` as `formatDiagnostic`: it renders the code, optional primary label, and message on the first line, then notes and help indented beneath.
+The collector stores a private persistent spine. Each event allocates one node and
+thunk carriers for its payload and head, caches the previous pointer to weak head
+normal form, and updates fixed scalar state. It neither copies nor forces the
+existing spine. Both reports and successful `validation.all` results use the same
+private finalizer. It allocates an indexed cursor list with `genList`, then forces
+cursors from head to tail with `foldl'`. Each cursor follows one cached predecessor
+through constant-time `elemAt`; reverse output indexes the settled cursors once.
+The three loops do linear total work without associative duplicate tracking or
+native recursion proportional to event count. Empty results don't demand the head.
 
-Aggregate independent diagnostics before throwing when the remaining input can be inspected safely. Do not run later dependent phases after an earlier phase is invalid merely to increase the count. Ownerships, for example, may aggregate several declaration diagnostics but must not run selection or merge after declaration validation fails.
+This reasoning follows Nix 2.35.1's implementations of `genList`, `elemAt`, and
+`foldl'` in [primops.cc](https://github.com/NixOS/nix/blob/2.35.1/src/libexpr/primops.cc).
+It describes owned spine construction and finalization, excluding upstream
+interpretation, type checking, and requested presentation. Summaries use a fixed
+number of traversals and nix builtins for code grouping; no complexity claim is
+made for that grouping. The fixed 10,000-event and 10,000-value tests check count,
+complete order, and throwing-payload laziness. No latency or memory claim is made.
 
-## Contextual evaluation
+## Checked validation
 
-Use `withErrorContext` around extension callbacks and other user-supplied evaluation boundaries:
+`validation.types` owns the supported constructor interface. It provides `String`,
+`Int`, `Bool`, `Float`, `Attrs`, `Path`, `Function`, `Unit`, `Null`, `Any`, `Record`,
+`ListOf`, `Maybe`, `Variant`, `Either`, `refine`, and `refined`, with the corresponding
+public nix-effects signatures. Descriptions close over actual corrected upstream
+types. The adapter doesn't walk input structure itself or accept raw upstream/custom
+type objects. Its runtime admission shape is a usage contract, not an unforgeable
+brand, a proof of arbitrary predicates, or a security boundary. Don't construct
+admission records yourself. General dependent types, proofs, and third-party
+verifiers aren't supported.
 
-```nix
-krisis.withErrorContext
-  "ownerships: while evaluating axis 'when' selector"
-  (predicate ctx)
-```
+`validation.check { type; code; location ? null; } value` produces a computation of
+`Checked`, either `{ _con = "Valid"; value = Thunk a; }` or `{ _con = "Invalid"; }`.
+Each upstream `typeCheck` event is authoritative failure evidence. The adapter
+retains `deriveBounce`; it never rechecks a placeholder or treats resumed values as
+validity evidence. Type, code, and control-option names are checked at the entry
+boundary. Location is deferred presentation metadata: valid input and envelope-only
+failure summaries don't inspect it. Requesting failure presentation validates the
+location, its normalized paths, and source ranges. Located failures retain extras,
+missing nullable fields, nested refinements, field names, indexes, and variant tags. Context records only validation
+path, reason, expected type name, and outer shape; no raw input is attached.
 
-This uses `builtins.addErrorContext`, so the original exception remains visible. Do not replace callback failures with `tryEval`; Nix does not expose the original thrown message through `tryEval`.
+`validation.all checks` evaluates independent checked computations in list order.
+It accumulates ordinary failures and returns Valid with a thunked value list only
+if every check is Valid. `validation.andThen f computation` calls `f` with the
+unwrapped value only after Valid. Invalid has no successful value field. Aggregation
+settles its counters and previous spine pointer before returning each computation,
+including pure checks that bypass interpreter state forcing. Thrown inputs and
+predicates remain evaluation failures. Supported refinement checking
+has the acceptance and failure-path costs described in [qualification.md](qualification.md).
 
-Place the wrapper around the field that is actually forced. Wrapping a lazy record without forcing its failing field will not retain the context.
+## Inspection, suggestions, and exceptions
 
-Context strings must not force labels, provenance, payloads, or other metadata that successful evaluation does not otherwise need. Prefer already-validated labels at an authoring boundary and shallow `safeShape` output at a generic engine boundary.
+`inspect.value options value` bounds scalar strings and scalar-list prefixes.
+Options are `maxStringLength`, default 256; `maxListItems`, default 32; and `fallback`,
+default `"<unrenderable value>"`. Bounds must be nonnegative integers. Scalars render
+as JSON, paths discard string context, functions show `<function>`, and arbitrary
+attrsets use the fallback. Derivations show only a guarded name, with `?` when the
+name is missing, throwing, or not a string. Omitted list elements aren't inspected.
 
-## Safe rendering
+`inspect.shape { maxAttrs ? 32; } value` shows sorted shallow names or a type name,
+with guarded derivation identity. `inspect.identity { value; label ? null;
+source ? null; noun ? "value"; }` prefers label, then source, then shape. Identity
+controls are checked even when an earlier preference wins.
 
-`safeRender` is for bounded value display in errors:
+Malformed options fail outside fallback handling on every branch. Thrown roots can
+fall back within Nix's limited `tryEval` behavior. It catches some throws/assertions,
+not every evaluator error, abort, or nontermination. Output bounds aren't a general
+evaluator budget or secrecy guarantee. List length and attr-name enumeration still
+observe container structure. Caller-provided strings can contain sensitive data.
 
-```nix
-krisis.safeRender 42
-# "42"
+`suggest.nearest { maxDistance ? null; } input candidates` uses nixpkgs'
+`levenshteinAtMost`, tightening the bound as it finds candidates. The default bound
+is 1 for input lengths up to 4, otherwise 3. Explicit bounds are nonnegative integers.
+Exact matches win, equal-distance ties retain the first candidate, and no match or
+an empty candidate list returns null.
 
-krisis.safeRender [ "a" "b" ]
-# "[\"a\",\"b\"]"
+`nix.withErrorContext message value` uses `builtins.addErrorContext`. Wrap the
+expression actually forced, such as a callback's selected field. Wrapping a lazy
+record doesn't add context to an independently forced child. Original exceptions
+remain exceptions; Krisis doesn't convert callback throws to diagnostics.
 
-krisis.safeRender (_: true)
-# "<function>"
-```
+## Presentation and development
 
-Behavior:
+`render.project diagnostic` returns validated normalized presentation data without
+context. `render.plain diagnostic` supplies terminal severity/code/message output,
+with a primary identity, notes, and help. Complete location/related rendering,
+versioned JSON, the Nix module adapter, further executable examples, and CI aren't
+implemented or exported yet.
 
-- strings, numbers, booleans, null, and paths render as JSON scalars;
-- paths have string context discarded before rendering;
-- lists render only when every inspected item is a recognized scalar;
-- functions render as `<function>`;
-- ordinary attrsets render as `<unrenderable value>`;
-- derivations render as `<derivation NAME>`;
-- a missing, throwing, or non-string derivation name becomes `?`;
-- failed attempts return the configured fallback.
-
-`safeRender` never recursively serializes arbitrary attrsets.
-
-Use `safeRenderWith` to bound work and output:
-
-```nix
-krisis.safeRenderWith {
-  maxStringLength = 128;
-  maxListItems = 16;
-  fallback = "<opaque>";
-} value
-```
-
-Strings longer than the configured bound are truncated. Lists show at most the configured number of scalar items and report how many remain.
-
-## Safe shape and identity
-
-```nix
-krisis.safeShape {
-  services = { ... };
-  packages = [ ... ];
-}
-# "{ packages, services }"
-
-krisis.safeIdentity {
-  value = unit;
-  label = unit.label or null;
-  source = unit.source or null;
-  noun = "unit";
-}
-```
-
-`safeShape` exposes only sorted attribute names for ordinary attrsets. `safeShapeWith { maxAttrs = 8; }` bounds that list.
-
-`safeIdentity` prefers a validated label, then a source, then shallow shape. Do not use it at a boundary where evaluating label or source would violate an existing laziness guarantee.
-
-## Collection helpers
-
-```nix
-diagnostics = krisis.collectDiagnostics [
-  shapeDiagnostics
-  ownershipDiagnostics
-  (krisis.optionalDiagnostic conflict conflictDiagnostic)
-];
-```
-
-Collection preserves group and item order. It does not catch exceptions or convert thrown callbacks into diagnostic records.
-
-## Forcing boundaries
-
-Safe rendering is about evaluation safety, not secrecy classification. It prevents accidental traversal, but an explicitly supplied label or message may still contain sensitive text.
-
-Preserve these rules:
-
-- never use `toJSON` or `toPretty` on arbitrary config payloads;
-- guard derivation identity and names;
-- never force `drvPath`, `outPath`, secret fields, provenance, or list elements merely to name a value;
-- prefer validated author labels and source locations, then shallow shape;
-- render known-safe claim and schema data separately from opaque payloads;
-- add poison-value tests for every new rendering or contextual-evaluation branch.
-
-## Runtime type diagnostics
-
-Use an Axiom runtime description when nested fields should retain precise paths:
-
-```nix
-parse = krisis.validateType {
-  type = axiom.types.record {
-    ports = axiom.types.listOf axiom.types.int;
-    implementation = axiom.types.opaque;
-  };
-  code = "service/shape";
-  label = "server";
-  path = [ "config" ];
-};
-
-result = parse declaration;
-value = reporter.finish result;
-```
-
-`type` and the complete diagnostic `code` are required. `label`, `source`, `severity` (default `error`), and a path prefix (default empty) are optional. Options are checked even when validation succeeds. Success preserves the parsed value; failure maps each neutral type issue to a Krisis record without attaching the input. `context.validation` contains only `path`, `expected`, `actual`, and `reason`. The normal message includes a rendered path and expected/actual outer shapes. The caller still owns the code and reporting policy.
-
-`renderPath [ "config" "ports" 0 ]` returns `$.config.ports[0]`. Exotic field names are quoted, and numeric components are zero-based, non-negative indexes. Root is `$`. Attribute paths do not grant authority to read the original payload.
-
-A type validator is not a safe renderer. A thrown input or predicate remains an evaluation error; it is not converted into a normal validation diagnostic. Use `opaque` for values that the boundary must not inspect.
-
-## Summaries and suggestions
-
-`summarizeDiagnostics diagnostics` returns `total`, `hasErrors`, `bySeverity` (always containing error, warning, and info), and `byCode` counts. It validates only the code/severity envelope and never renders messages, notes, or contexts. Counting diagnostics does not create a new failure policy. A warning still counts as a diagnostic when passed to `reporter.finish`; callers choose whether to separate severities first.
-
-`suggest input candidates` returns the closest candidate within distance 1 for inputs of up to four characters, otherwise distance 3, or null. Equal-distance ties retain the first candidate. `suggestWith { maxDistance = 2; } input candidates` sets an explicit non-negative bound. Candidates must be strings. The implementation narrows the current best bound, uses nixpkgs' `levenshteinAtMost`, and does not sort all candidates. `editDistance a b` delegates to nixpkgs' `levenshtein`.
-
-## Rendering limits
-
-Thrown roots now return the same fallback as other unrenderable values. Malformed options still throw outside that fallback, including for function and derivation branches. Only the bounded output expression is attempted; raw payloads are never deep-forced. Nix `tryEval` catches throw/assert failures, not every evaluator error, abort, or nontermination. Output limits are not a general evaluation budget or secrecy guarantee.
-
-## Evaluator compatibility
-
-The source uses `|>` and the flake requests `pipe-operators`. On Nix 2.25, enable `extra-experimental-features = pipe-operators`, or accept this flake's setting. A raw `import ./src` does not apply flake configuration. The tested Lix development evaluator supports pipes without that flag and warns if given the Nix-only feature name. Keep Axiom and Krisis on compatible source revisions; Lexicon follows one Axiom input across both.
-
-## Verification
-
-The locked development environment provides focused tests and the full gate. See
-[the qualification contract](qualification.md) for dependency corrections,
-forcing boundaries, source admission, and toolchain ownership:
+The pinned environment supplies Nix and nix-unit 2.35.1. The source uses `|>`;
+direct imports need Nix's `pipe-operators` feature. See
+[qualification.md](qualification.md) for lock parity, offline sandboxing, source
+admission, and the forcing contract.
 
 ```fish
 devenv shell
-krisis-test
+krisis-test baseline extensions
 krisis-fmt
 krisis-gate
-# or run the full task graph from outside the shell
+# the same full gate outside the shell
 devenv test
 ```

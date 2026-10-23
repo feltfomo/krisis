@@ -2,7 +2,7 @@
 let
   editDistance = lib.strings.levenshtein;
 
-  suggestWith =
+  nearest =
     {
       maxDistance ? null,
     }:
@@ -41,8 +41,7 @@ let
       in
       if best == null then null else best.name;
 
-  suggest = suggestWith { };
 in
 {
-  inherit editDistance suggest suggestWith;
+  inherit nearest;
 }

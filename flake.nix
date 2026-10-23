@@ -10,7 +10,6 @@
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    axiom.url = "github:feltfomo/axiom-nix/d56208631f0b89b8ff0a115105ad385017aaef23";
     nix-effects = {
       url = "github:kleisli-io/nix-effects/55ec2657c3c37e178c7730992a0f510739c1f945";
       flake = false;
@@ -30,14 +29,11 @@
         "aarch64-linux"
       ];
 
-      # consumers supply the same axiom instance as their own boundaries
+      # consumers share the qualified effect instance with their own computations
       flake.lib.krisis = import (source + "/src");
 
       perSystem =
         { pkgs, ... }:
-        let
-          axiom = inputs.axiom.lib.axiom { inherit (pkgs) lib; };
-        in
         {
           treefmt = import ./formatter.nix;
 
@@ -47,7 +43,6 @@
 
           legacyPackages.qualification = import (source + "/tests") {
             inherit (pkgs) lib;
-            inherit axiom;
             inherit (import ./nix/dependencies.nix { inherit inputs pkgs; }) fx;
           };
 

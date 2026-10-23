@@ -1,11 +1,11 @@
 {
   lib,
-  axiom,
   fx,
 }:
 {
-  baseline = import ./baseline.nix { inherit lib axiom; };
-  extensions = import ./extensions.nix { inherit lib axiom; };
+  boundaries = import ./boundaries.nix { inherit lib fx; };
+  baseline = import ./baseline.nix { inherit lib fx; };
+  extensions = import ./extensions.nix { inherit lib fx; };
   qualification = {
     refinements = import ./qualification/refinements.nix { inherit fx lib; };
     source = import ./qualification/source.nix { inherit lib; };

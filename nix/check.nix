@@ -6,7 +6,6 @@ let
     let lib = import ${inputs.nixpkgs}/lib;
     in import ${source}/tests {
       inherit lib;
-      axiom = import ${inputs.axiom}/src { inherit lib; };
       fx = import ${dependencies.fxSource} { inherit lib; };
     }
   '';

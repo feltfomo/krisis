@@ -1,24 +1,5 @@
 {
   "nodes": {
-    "axiom": {
-      "inputs": {
-        "nixpkgs": "nixpkgs"
-      },
-      "locked": {
-        "lastModified": 1788630075,
-        "narHash": "sha256-eCsHSpBp6JgGS6BZdfkUbRwejrLPm0an/u35YQi2jyw=",
-        "owner": "feltfomo",
-        "repo": "axiom-nix",
-        "rev": "d56208631f0b89b8ff0a115105ad385017aaef23",
-        "type": "github"
-      },
-      "original": {
-        "owner": "feltfomo",
-        "repo": "axiom-nix",
-        "rev": "d56208631f0b89b8ff0a115105ad385017aaef23",
-        "type": "github"
-      }
-    },
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": "nixpkgs-lib"
@@ -51,22 +32,6 @@
         "owner": "kleisli-io",
         "repo": "nix-effects",
         "rev": "55ec2657c3c37e178c7730992a0f510739c1f945",
-        "type": "github"
-      }
-    },
-    "nixpkgs": {
-      "locked": {
-        "lastModified": 1785967620,
-        "narHash": "sha256-IItrdb7Puk05RqOBWZYFC5X6Wl1sJmCfh5MWVHw5iMM=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "b7c2ada94fe99c15b0dbcf4d11fd7850b957a436",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "ref": "nixos-unstable",
-        "repo": "nixpkgs",
         "type": "github"
       }
     },
@@ -103,7 +68,6 @@
     },
     "root": {
       "inputs": {
-        "axiom": "axiom",
         "flake-parts": "flake-parts",
         "nix-effects": "nix-effects",
         "nixpkgs": "nixpkgs_2",
