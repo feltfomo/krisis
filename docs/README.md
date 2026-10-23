@@ -268,9 +268,15 @@ The source uses `|>` and the flake requests `pipe-operators`. On Nix 2.25, enabl
 
 ## Verification
 
-Krisis gates its own suite through the flake check:
+The locked development environment provides focused tests and the full gate. See
+[the qualification contract](qualification.md) for dependency corrections,
+forcing boundaries, source admission, and toolchain ownership:
 
 ```fish
-nix fmt
-nix flake check -L
+devenv shell
+krisis-test
+krisis-fmt
+krisis-gate
+# or run the full task graph from outside the shell
+devenv test
 ```

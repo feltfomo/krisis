@@ -1,0 +1,194 @@
+--- a/src/types/constructors.nix
++++ b/src/types/constructors.nix
+@@ -28,9 +28,8 @@
+   shapeErr = self: path: v:
+     send "typeCheck" { type = self; context = self.name; value = v; reason = "shape-mismatch"; inherit path; };
+ 
+-  # Shared Record/RecordOpen builder. `open` toggles whether undeclared
+-  # fields are silently ignored (true) or kernel-rejected (false). Verify
+-  # walks declared fields only either way — extras emit no blame.
++  # open records ignore undeclared fields, while closed validation reports
++  # extra names without inspecting their values.
+   mkRecordType = { open }: schema:
+     let
+       sortedNames = builtins.sort builtins.lessThan (builtins.attrNames schema);
+@@ -79,12 +78,23 @@
+       name = typeName;
+       inherit kernelType guard;
+       approximate = !allPrecise;
+-      # Descend each declared field through its own validateAtF so a refined
+-      # field's guard is authoritative. Extras unblamed (closed .check rejects).
++      # child verifiers retain refinement blame, after extra names in lexical order.
+       verify = self: fuel: path: v:
+         if !builtins.isAttrs v then shapeErr self path v
+         else
+           let
++            extraNames =
++              if open then [ ]
++              else builtins.filter (name: !(schema ? ${name})) (builtins.attrNames v);
++            extraStep = acc: name:
++              bind acc (_: send "typeCheck" {
++                type = self;
++                context = name;
++                value = null;
++                reason = "extra-field";
++                path = path ++ [ (P.Field name) ];
++              });
++            extras = builtins.foldl' extraStep (pure null) extraNames;
+             step = acc: fname:
+               bind acc (_:
+                 let
+@@ -95,7 +105,7 @@
+                 then send "typeCheck" { type = childType; context = fname; value = null; reason = "missing-field"; path = childPath; }
+                 else descendV childType fuel childPath v.${fname});
+           in
+-          bind (builtins.foldl' step (pure null) sortedNames) (_: pure v);
++          bind (builtins.foldl' step extras sortedNames) (_: pure v);
+     };
+ 
+   Record = mkRecordType { open = false; };
+@@ -742,6 +752,10 @@
+       name = "Maybe[${innerType.name}]";
+       inherit kernelType guard;
+       approximate = !isPrecise;
++      # nullable composition must preserve child blame and the descent budget
++      verify = _self: fuel: path: v:
++        if v == null then pure null
++        else descendV innerType fuel path v;
+     };
+   MaybeTests = let FP = fx.types.primitives; U = fx.types.universe; in {
+     "accepts-null" = {
+@@ -937,6 +951,7 @@
+       hostGuard = v:
+         builtins.isAttrs v
+         && v ? _tag && v ? value
++        && builtins.isString v._tag
+         && schema ? ${v._tag}
+         && (schema.${v._tag}).check v.value;
+       # Internalize as a nested `sumElim` over the native variant carrier when
+@@ -962,7 +977,7 @@
+       # Descend the active branch through its own validateAtF; unknown tag is a
+       # shape mismatch.
+       verify = self: fuel: path: v:
+-        if !(builtins.isAttrs v && v ? _tag && v ? value) then shapeErr self path v
++        if !(builtins.isAttrs v && v ? _tag && v ? value && builtins.isString v._tag) then shapeErr self path v
+         else if schema ? ${v._tag} then descendV schema.${v._tag} fuel (path ++ [ (P.Tag v._tag) ]) v.value
+         else shapeErr self path v;
+     };
+--- a/src/types/foundation.nix
++++ b/src/types/foundation.nix
+@@ -706,13 +706,33 @@
+     if R.isKernelPred predicate then
+       (if (base._kernelPred or null) != null
+       then R.andKP base._kernelPred predicate
+-      else predicate)
++      else if base._kernelSufficient then predicate
++      else v: base.check v && R.deriveGuard predicate v)
+     else v: base.check v && predicate v;
++
++  # accepted bases need no second structural walk; rejected bases are revisited
++  # only to recover their located failure events, never to run the new predicate
++  refineVerify = base: predicate:
++    let test = if R.isKernelPred predicate then R.deriveGuard predicate else predicate;
++    in self: fuel: path: v:
++      if base.check v then
++        if test v then pure v
++        else send "typeCheck" {
++          type = self;
++          context = self.name;
++          value = v;
++          reason = "predicate-failed";
++          inherit path;
++        }
++      else if fuel <= 0 then
++        send "deriveBounce" { run = _: base.validateAtF 512 path v; }
++      else base.validateAtF (fuel - 1) path v;
+ 
+   refine = base: predicate: mkType {
+     name = "${base.name}[refined]";
+     kernelType = base._kernel;
+     guard = refineGuard base predicate;
++    verify = refineVerify base predicate;
+     description = "${base.description} (refined)";
+     # Same kernel as `base`, so `base.universe` (>= the kernel minimum) stays a
+     # consistent declaration — a refinement must not silently drop a declared
+@@ -938,6 +958,10 @@
+       '';
+       tests = refineTests;
+     };
++    refineVerify = api.leaf {
++      value = refineVerify;
++      description = "Share effectful base validation and authoritative predicate sequencing.";
++    };
+     refineGuard = api.leaf {
+       value = refineGuard;
+       description = "refineGuard: build a refinement type's guard slot from a base type and a predicate; a KernelPred witness yields a kernel-derived (authoritative) guard composed with the base's witness, a raw predicate stays an opaque lambda conjoined with `base.check`.";
+--- a/src/types/refinement.nix
++++ b/src/types/refinement.nix
+@@ -7,7 +7,7 @@
+ # Grounded in Freeman & Pfenning (1991) "Refinement Types for ML" and Rondon et al. (2008) "Liquid Types".
+ { fx, api, ... }:
+ let
+-  inherit (fx.types.foundation) mkType check refineGuard;
++  inherit (fx.types.foundation) mkType check refineGuard refineVerify;
+   H = fx.tc.hoas;
+   R = fx.tc.kernel.reflect;
+ 
+@@ -17,6 +17,7 @@
+     inherit name;
+     kernelType = base._kernel;
+     guard = refineGuard base predicate;
++    verify = refineVerify base predicate;
+     description = "${name} (refined from ${base.name})";
+     # Same kernel as `base`, so `base.universe` (>= the kernel minimum) stays a
+     # consistent declaration — a refinement must not silently drop a declared
+--- a/src/tc/generic/check.nix
++++ b/src/tc/generic/check.nix
+@@ -300,7 +300,7 @@
+   # `Pos.Field "value"` appears in any path; constructor tags at the
+   # surface preserve Wadler-Findler blame-label source-invariance.
+   walkVariant = alg: fuel: ty: path: value:
+-    if !(builtins.isAttrs value && value ? _tag && value ? value) then
++    if !(builtins.isAttrs value && value ? _tag && value ? value && builtins.isString value._tag) then
+       emit alg (wrapType ty) path "shape-mismatch"
+         "expected { _tag; value; }, got ${builtins.typeOf value}"
+         value
+@@ -468,6 +468,18 @@
+   unitWalkFields = fuel: ty: path: info: con: value:
+     let
+       unknownType = { _htag = "<unknown>"; };
++      fieldNames = map (f: f.name) con.fields;
++      extraNames =
++        if info.openExtras or false then [ ]
++        else builtins.filter
++          (name: name != "_con" && name != "_tag" && !(builtins.elem name fieldNames))
++          (builtins.attrNames value);
++      extraStep = acc: name:
++        bind acc (prev: bind
++          (emit unitAlg (wrapType ty)
++            (P.extend path (Pos.Field name)) "extra-field" name null)
++          (_: pure prev));
++      extras = builtins.foldl' extraStep (pure { }) extraNames;
+       fieldTyAt = f: prev:
+         if f.kind == "recAt"
+         then
+@@ -520,7 +532,7 @@
+           bind (descend unitAlg fuel tyAtF childPath fv) (_: pure prev);
+       step = acc: f: bind acc (prev: fieldComp prev f);
+     in
+-    bind (builtins.foldl' step (pure { }) con.fields) (_: pure null);
++    bind (builtins.foldl' step extras con.fields) (_: pure null);
+ 
+   # hoasAlg's walkFields. Threads `prev` through `D.fieldType` for
+   # dependent fields and accumulates an `H.app` chain rooted at
+--- a/src/effects/typecheck.nix
++++ b/src/effects/typecheck.nix
+@@ -60,7 +60,7 @@
+     let ty = builtins.typeOf v; in
+     if ty == "set" then
+       let tag = v._con or v._tag or null; in
+-      if tag != null then "set(_con=${toString tag})" else ty
++      if builtins.isString tag then "set(_con=${tag})" else ty
+     else ty;
+ 
+   # Build the diagnostic message. Top-level errors (empty path) drop the
