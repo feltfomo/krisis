@@ -70,13 +70,19 @@ def main():
     if mode in ("format", "check-format"):
         if mode == "check-format":
             parity()
-        files = [name for name in candidates() if name.endswith(".nix") and (ROOT / name).is_file()]
+        files = [
+            name for name in candidates()
+            if name.endswith(".nix")
+            and not name.startswith("vendor/")
+            and (ROOT / name).is_file()
+        ]
         if mode == "check-format":
             source = snapshot("check-format")
             files = [str(source / name) for name in files]
         run(["nixfmt", *(["--check"] if mode == "check-format" else []), *files])
     elif mode == "static":
-        run(["statix", "check", str(snapshot("check-nix"))])
+        source = snapshot("check-nix")
+        run(["statix", "check", "--ignore", "vendor", str(source)])
     elif mode == "prepare":
         parity()
         source = snapshot("prepare")

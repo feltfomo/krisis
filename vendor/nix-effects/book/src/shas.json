@@ -1,0 +1,17 @@
+{
+  "SUMMARY.md": "19f3a978c346470d32f13e6581d7c8fb30e022fe",
+  "effects-and-handlers.md": "19f3a978c346470d32f13e6581d7c8fb30e022fe",
+  "generated-datatypes.md": "04c91b1fceb5a01c2fe8efe0703bddf6fd0fd11d",
+  "generic-programming.md": "4c607af947bd0de4209f34032bf961dc84e0e948",
+  "getting-started.md": "04c91b1fceb5a01c2fe8efe0703bddf6fd0fd11d",
+  "index.md": "19f3a978c346470d32f13e6581d7c8fb30e022fe",
+  "introduction.md": "4c607af947bd0de4209f34032bf961dc84e0e948",
+  "kernel-architecture.md": "09da833e5b60c6450a94ab88fd19b75424422b5c",
+  "kernel-spec.md": "19f3a978c346470d32f13e6581d7c8fb30e022fe",
+  "ornaments.md": "1a359951d8b8ca52e885d7f832883d62514827bf",
+  "proof-guide.md": "bfa4c37eddc4a98a29b127d7b961585103d33f9d",
+  "sugar.md": "e3a1d6693c9fda3614c56d92288a52bf11ffcc7f",
+  "theory.md": "1d90cbda2a0695314f819d9b4f981ee22c9b48db",
+  "trampoline.md": "05aaeeb785703a3addba23bec3c81f3a55b17a22",
+  "typed-validation.md": "4c607af947bd0de4209f34032bf961dc84e0e948"
+}

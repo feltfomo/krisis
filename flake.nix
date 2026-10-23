@@ -30,16 +30,23 @@
       ];
 
       # callers own the effect instance shared with application computations
-      flake.lib.krisis = import (source + "/src");
+      flake.lib = {
+        krisis = import ./src;
+        qualifiedNixEffectsSource = import ./nix/qualified-source.nix;
+      };
 
       perSystem =
         { pkgs, ... }:
         {
           treefmt = import ./formatter.nix;
 
-          checks.tests = import ./nix/check.nix { inherit inputs pkgs; };
+          checks = {
+            tests = import ./nix/check.nix { inherit inputs pkgs; };
+            qualified-source = import ./nix/verify-qualified-source.nix { inherit inputs pkgs; };
+          };
 
-          packages.qualified-nix-effects = (import ./nix/dependencies.nix { inherit inputs pkgs; }).fxSource;
+          packages.qualified-nix-effects =
+            (import ./nix/dependencies.nix { inherit inputs pkgs; }).qualifiedPackage;
 
           legacyPackages.qualification = import (source + "/tests") {
             inherit (pkgs) lib;

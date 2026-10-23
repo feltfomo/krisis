@@ -9,15 +9,31 @@ they aren't production APIs or collector cost evidence.
 
 ## Dependency and supported types
 
-`nix/dependencies.nix` applies `patches/nix-effects-validation.patch` to
-nix-effects `55ec2657c3c37e178c7730992a0f510739c1f945`, then imports its
-curated public value. Qualification and library imports must use
-this owner. The patched source is also available through the flake's
-`packages.<system>.qualified-nix-effects`. Consumers import that shipped source
-with their own `lib`, then pass the resulting `fx` to Krisis and use it in their
-application computations. Krisis initialization remains `{ lib, fx }`; it doesn't
-re-export all of nix-effects. Consumer imports use no private paths,
+`nix/qualified-source.nix` owns the plain corrected source tree exported as
+`lib.qualifiedNixEffectsSource`. `vendor/nix-effects` retains the complete
+nix-effects `55ec2657c3c37e178c7730992a0f510739c1f945` source with
+`patches/nix-effects-validation.patch` applied. Upstream MIT notices remain in the
+snapshot. `vendor/nix-effects-provenance.json` records the revision, patch digest,
+and corrected source NAR hash.
+
+`nix/dependencies.nix`, qualification, and consumers import those same bytes.
+The public source export is independent of `system`, import-from-derivation, and
+a native patch builder. `checks.<system>.qualified-source` reconstructs the
+reference from the immutable flake input and patch at build time, rejects content,
+file-kind, symlink, or executable-bit differences, and supplies the identical tree
+as `packages.<system>.qualified-nix-effects`. A snapshot update must pass this
+comparison; formatter and static tools exclude third-party source from rewriting.
+
+Consumers import `lib.qualifiedNixEffectsSource` with their own `lib`, then pass
+the resulting shared `fx` to Krisis and application computations. Krisis
+initialization remains `{ lib, fx }`. Consumer imports use no private paths,
 `exposeInternals`, or experimental namespaces.
+
+The public `lib.krisis` constructor imports `src` directly. Its imports stay within
+that directory and don't materialize the filtered repository root. Checks,
+qualification suites, and candidate snapshots retain their source-admission rules.
+The corrected effect source and its distribution are independent of this constructor
+import.
 
 The qualified fragment is `String`, `Int`, `Bool`, `Float`, `Attrs`, `Path`,
 `Function`, `Unit`/`Null`, opaque `Any`, closed `Record fields`, `ListOf type`,

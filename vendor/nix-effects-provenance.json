@@ -1,0 +1,9 @@
+{
+  "upstream": "https://github.com/kleisli-io/nix-effects",
+  "revision": "55ec2657c3c37e178c7730992a0f510739c1f945",
+  "patch": "patches/nix-effects-validation.patch",
+  "patchSha256": "846a6a9888dae9d7f8252d824c07a9b395faf8820b3b587f68fc0316f142a274",
+  "correctedNarHash": "sha256-Umt30o5U4NRyIwJW/Cd77iK49Rry1fvUVtvHdARbErU=",
+  "license": "nix-effects/LICENSE",
+  "upstreamNarHash": "sha256-oktsDBoufvZS0cKlo8sMFV2j/KmN+ZPrtzOZ6ioaDQk="
+}

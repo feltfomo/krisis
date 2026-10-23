@@ -4,6 +4,7 @@
   assertionsModule,
 }:
 {
+  source = import ./source.nix { inherit lib fx; };
   presentation = import ./presentation.nix { inherit lib fx; };
   integration = import ./integration.nix { inherit lib fx assertionsModule; };
   examples = import ./examples.nix { inherit lib fx assertionsModule; };

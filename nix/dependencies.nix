@@ -1,12 +1,9 @@
 { inputs, pkgs }:
 let
-  fxSource = pkgs.applyPatches {
-    name = "nix-effects-validation";
-    src = inputs.nix-effects;
-    patches = [ ../patches/nix-effects-validation.patch ];
-  };
+  fxSource = import ./qualified-source.nix;
 in
 {
   inherit fxSource;
   fx = import fxSource { inherit (pkgs) lib; };
+  qualifiedPackage = import ./verify-qualified-source.nix { inherit inputs pkgs; };
 }

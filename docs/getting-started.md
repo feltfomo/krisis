@@ -19,9 +19,8 @@ Create these two files in your consumer project. In `flake.nix`:
 
   outputs = inputs:
     let
-      system = "x86_64-linux";
       lib = inputs.nixpkgs.lib;
-      fx = import inputs.krisis.packages.${system}.qualified-nix-effects {
+      fx = import inputs.krisis.lib.qualifiedNixEffectsSource {
         inherit lib;
       };
     in {
@@ -33,17 +32,17 @@ Create these two files in your consumer project. In `flake.nix`:
 }
 ```
 
-`system` selects the package used to produce the corrected dependency source;
-choose the declared system appropriate for your consumer. Native test evidence
-is for `x86_64-linux`. Let Nix create a lockfile for your consumer so later
-evaluations use the same inputs. If the consumer is in Git, add the new files
-before evaluating its flake so Nix includes them.
+`lib.qualifiedNixEffectsSource` is a plain corrected source tree. Importing it
+requires neither import-from-derivation nor a native patch builder. The export is
+independent of the consumer's system. Let Nix create a lockfile for your consumer
+so later evaluations use the same inputs. If the consumer is in Git, include its
+new files before evaluating its flake.
 
 The consumer owns `lib`. This example follows Krisis's nixpkgs input to use the
-same revision. Import `qualified-nix-effects` with that `lib`, then pass the same
-`fx` to Krisis and to your computations. Krisis doesn't fetch an effect instance
-or re-export nix-effects. The package contains the maintained dependency
-correction; importing the uncorrected input skips that correction.
+same revision. Import the source with that `lib`, then pass the same `fx` to Krisis
+and your computations. The existing `packages.<system>.qualified-nix-effects`
+package supplies identical source bytes after build-time parity verification.
+Krisis doesn't fetch an effect instance or re-export nix-effects.
 
 In `diagnostics.nix`:
 

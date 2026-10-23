@@ -1,0 +1,419 @@
+{ self, fx, api, ... }:
+
+let
+  V = fx.tc.value;
+  C = fx.tc.conv;
+  E = fx.tc.eval;
+  T = fx.tc.term;
+
+  unique = xs:
+    builtins.foldl'
+      (acc: x: if builtins.elem x acc then acc else acc ++ [ x ])
+      [ ]
+      xs;
+
+  isVMeta = v:
+    builtins.isAttrs v && (v._vTag or null) == "VMeta";
+
+  mkVMeta = id: spine: type:
+    { _vTag = "VMeta"; inherit id spine type; };
+
+  concatMap = f: xs: builtins.concatLists (map f xs);
+
+  # Children of a value node for the meta/level walk: the sub-values reachable
+  # in one structural step, spine-frame payloads included. The `_canonRef`
+  # VDescCon short-circuit walks only `params` — the body is a closed canonical
+  # encoding (`descDesc` nesting through `Lift`/`LevelMax`) that would loop;
+  # mirrors the kernel `canonRefConv` short-circuit. EAbsurd carries no
+  # walkable payload here.
+  frameChildren = frame:
+    let t = frame.tag or null;
+    in
+    if t == "EApp" then [ frame.arg ]
+    else if t == "EBootSumElim" then [ frame.left frame.right frame.motive frame.onLeft frame.onRight ]
+    else if t == "EBootJ" then [ frame.type frame.lhs frame.motive frame.base frame.rhs ]
+    else if t == "EStrEq" then [ frame.arg ]
+    else if t == "EIntEq" || t == "EIntLeL" || t == "EIntLeR" then [ frame.arg ]
+    else if t == "EDescInd" then [ frame.D frame.motive frame.step frame.i ]
+    else if t == "ELiftElim" then [ frame.l frame.m frame.eq frame.A ]
+    else if t == "ESquashElim" then [ frame.A frame.B frame.f ]
+    else if t == "EInterpD" then [ frame.level frame.I frame.X frame.i ]
+    else if t == "EAllD" then [ frame.level frame.I frame.K frame.X frame.M frame.i frame.d ]
+    else if t == "EEverywhereD" then [ frame.level frame.I frame.K frame.X frame.M frame.ih frame.i frame.d ]
+    else [ ];
+
+  childrenVal = v:
+    if isVMeta v then concatMap frameChildren (v.spine or [ ])
+    else if builtins.isAttrs v then
+      let t = v.tag or null;
+      in
+      if t == "VNe" then concatMap frameChildren (v.spine or [ ])
+      else if t == "VLam" || t == "VPi" then [ v.domain ]
+      else if t == "VSigma" then [ v.fst ]
+      else if t == "VPair" then [ v.fst v.snd ]
+      else if t == "VBootSum" then [ v.left v.right ]
+      else if t == "VBootInl" || t == "VBootInr" then [ v.left v.right v.val ]
+      else if t == "VBootEq" then [ v.type v.lhs v.rhs ]
+      else if t == "VSquash" then [ v.A ]
+      else if t == "VSquashIntro" then [ v.a ]
+      else if t == "VDesc" then [ v.level v.I ]
+      else if t == "VMu" then [ v.I v.D v.i ]
+      else if t == "VDescCon" then
+        if v ? _canonRef then (v._canonRef.params or [ ]) else [ v.D v.i v.d ]
+      else if t == "VInterpD" then [ v.level v.I v.D v.X v.i ]
+      else if t == "VAllD" then [ v.level v.I v.D v.K v.X v.M v.i v.d ]
+      else if t == "VEverywhereD" then [ v.level v.I v.D v.K v.X v.M v.ih v.i v.d ]
+      else if t == "VLift" then [ v.l v.m v.eq v.A ]
+      else if t == "VLiftIntro" then [ v.l v.m v.eq v.A v.a ]
+      else if t == "VLevelSuc" then [ v.pred ]
+      else if t == "VLevelMax" then [ v.lhs v.rhs ]
+      else if t == "VOpaqueLam" then [ v.piTy ]
+      else [ ]
+    else [ ];
+
+  # One stack-safe pre-order walk over the value tree, parameterised by the
+  # per-node leaf collector. `genericClosure` is keyed by a step counter, never
+  # by node identity, so multiplicity is preserved — patternSolve reads
+  # `allDistinct` over the raw level list. Pushing children to the front and
+  # popping the front yields native pre-order; the trace is a materialized
+  # vector, so the final `map`/`concatLists` stay iterative in libnix.
+  walkVal = collect: root:
+    let
+      trace = builtins.genericClosure {
+        startSet = [ { key = 0; stack = [ root ]; out = [ ]; } ];
+        operator = item:
+          if item.stack == [ ] then [ ]
+          else
+            let
+              v = builtins.head item.stack;
+              rest = builtins.tail item.stack;
+            in [ {
+              key = item.key + 1;
+              stack = childrenVal v ++ rest;
+              out = collect v;
+            } ];
+      };
+    in builtins.concatLists (map (it: it.out) trace);
+
+  metaIdsVal = walkVal (v: if isVMeta v then [ v.id ] else [ ]);
+
+  levelsVal = walkVal
+    (v: if builtins.isAttrs v && (v.tag or null) == "VNe" then [ v.level ] else [ ]);
+
+  mentionsOf = vals: unique (concatMap metaIdsVal vals);
+
+  occurs = id: v:
+    builtins.elem id (metaIdsVal v);
+
+  spineArg = frame:
+    if (frame.tag or null) == "EApp" then frame.arg else null;
+
+  isVar = v:
+    builtins.isAttrs v && (v.tag or null) == "VNe" && (v.spine or [ ]) == [ ];
+
+  spineVars = spine:
+    let args = map spineArg spine;
+    in if builtins.any (x: x == null || !(isVar x)) args then null else map (x: x.level) args;
+
+  allDistinct = xs:
+    builtins.length xs == builtins.length (unique xs);
+
+  patternSpine = spine:
+    let vars = spineVars spine;
+    in vars != null && allDistinct vars;
+
+  noMeta = v: metaIdsVal v == [ ];
+
+  subsetOf = xs: ys:
+    builtins.all (x: builtins.elem x ys) xs;
+
+  quoteDomain = d: ty:
+    let q = builtins.tryEval (fx.tc.quote.quote d ty);
+    in if q.success then q.value else T.mkUnit;
+
+  lamSolution = vars: metaType: rhs:
+    let
+      n = builtins.length vars;
+      body = fx.tc.quote.quote n rhs;
+      build = i: ty: inner:
+        if i < 0 then inner
+        else
+          let
+            pi = if builtins.isAttrs ty && (ty.tag or null) == "VPi" then ty else null;
+            domain = if pi != null then pi.domain else V.vUnit;
+            nextTy =
+              if pi != null
+              # `pi.closure` may capture `VMeta`s from the meta's type
+              # telescope; the kernel evaluator crashes inspecting them
+              # (reads `.tag`). Route through the overlay.
+              then fx.tc.elaborate.instantiateOverlay pi.closure (V.freshVar i)
+              else null;
+          in
+          T.mkLam "_" (quoteDomain i domain) (build (i - 1) nextTy inner);
+      tm = build (n - 1) (metaType.ty or null) body;
+    in
+    E.eval [ ] tm;
+
+  patternSolve = m: rhs: state:
+    let
+      vars = spineVars (m.spine or [ ]);
+      rawRhsLevels = levelsVal rhs;
+      rhsLevels = unique rawRhsLevels;
+    in
+    if vars != null && allDistinct rawRhsLevels && subsetOf rhsLevels vars && noMeta rhs then {
+      state = self.solveMeta m.id (lamSolution vars (m.type or { }) rhs) state;
+      result = { status = "solved"; };
+    } else {
+      state = state;
+      result = { status = "postponed"; reason = "pattern-spine-not-inverted"; };
+    };
+
+  directMetaSolve = m: rhs: state:
+    if occurs m.id rhs then {
+      state = state;
+      result = { status = "failed"; reason = "occurs-check"; };
+    } else if (m.spine or [ ]) == [ ] then {
+      state = self.solveMeta m.id rhs state;
+      result = { status = "solved"; };
+    } else if patternSpine (m.spine or [ ]) then
+      patternSolve m rhs state
+    else {
+      state = state;
+      result = { status = "postponed"; reason = "non-pattern-spine"; };
+    };
+
+  rigidConv = c:
+    ! builtins.any (v: metaIdsVal v != [ ]) [ c.lhs c.rhs (c.type or V.vUnit) ]
+    && C.conv (c.depth or 0) c.lhs c.rhs;
+
+  simplifyConv = c: state:
+    let
+      lhs = if isVMeta c.lhs then self.forceMeta c.lhs state else c.lhs;
+      rhs = if isVMeta c.rhs then self.forceMeta c.rhs state else c.rhs;
+      c1 = c // { inherit lhs rhs; mentions = mentionsOf [ lhs rhs (c.type or V.vUnit) ]; };
+    in
+    if rigidConv c1 then { state = state; constraint = c1 // { status = "solved"; }; }
+    else if isVMeta lhs then
+      let r = directMetaSolve lhs rhs state;
+      in { state = r.state; constraint = c1 // r.result; }
+    else if isVMeta rhs then
+      let r = directMetaSolve rhs lhs state;
+      in { state = r.state; constraint = c1 // r.result; }
+    else { state = state; constraint = c1 // { status = "postponed"; }; };
+
+  simplifyPlicityAwait = c: state:
+    let
+      awaited = c.awaiting or null;
+      entry = if awaited == null then null else self.lookupMeta state awaited;
+      solved = entry != null && self.isSolved entry;
+    in
+    if solved
+    then { state = state; constraint = c // { status = "solved"; }; }
+    else { state = state; constraint = c // { status = "postponed"; }; };
+
+  simplifyConstraint = c: state:
+    if (c.tag or null) == "conv" && c ? lhs && c ? rhs
+    then simplifyConv (self.mkConstraint c) state
+    else if (c.tag or null) == "plicity-await"
+    then simplifyPlicityAwait (self.mkConstraint c) state
+    else { state = state; constraint = self.mkConstraint c; };
+
+  addAndSimplifyConstraint = c: state:
+    let
+      simplified = simplifyConstraint c state;
+      added = self.addConstraint simplified.constraint simplified.state;
+    in
+    {
+      id = added.id;
+      state = added.state;
+    };
+
+  processActiveConstraints = state:
+    let
+      step = acc: c:
+        if (c.status or null) != "active" then acc // { constraints = acc.constraints ++ [ c ]; }
+        else
+          let r = simplifyConstraint (c // { status = "postponed"; }) (acc // { constraints = [ ]; });
+          in r.state // { constraints = acc.constraints ++ [ r.constraint ]; };
+    in
+    builtins.foldl' step (state // { constraints = [ ]; }) (state.constraints or [ ]);
+
+  sigmaFlatten = id: state:
+    let
+      entry = self.lookupMeta state id;
+      ty = if entry != null && entry ? type && builtins.isAttrs entry.type && entry.type ? ty then entry.type.ty else null;
+    in
+    if ty != null && (ty.tag or null) == "VSigma" && self.isHole entry then
+      let
+        fstAlloc = self.freshMetaInState { ctx = entry.type.ctx or { }; ty = ty.fst; } state;
+        # Meta-aware instantiation: `fstAlloc.meta` is a fresh VMeta;
+        # kernel `instantiate` cannot read it from the closure body.
+        # See `tc/elaborate/eval-overlay.nix`.
+        sndTy = fx.tc.elaborate.instantiateOverlay ty.closure fstAlloc.meta;
+        sndAlloc = self.freshMetaInState { ctx = entry.type.ctx or { }; ty = sndTy; } fstAlloc.state;
+        pair = V.vPair fstAlloc.meta sndAlloc.meta;
+      in
+      self.solveMeta id pair sndAlloc.state
+    else state;
+
+in
+{
+  scope = {
+    metaIdsVal = api.leaf {
+      value = metaIdsVal;
+      description = "metaIdsVal v: collect metavariable ids referenced by an elaborator value and its spine payloads.";
+      signature = "metaIdsVal : ElabVal -> [Int]";
+      tests = {
+        "metaIdsVal-vmeta" = {
+          expr = metaIdsVal (mkVMeta 5 [ ] { ctx = { }; ty = V.vUnit; });
+          expected = [ 5 ];
+        };
+      };
+    };
+    mentionsOf = api.leaf {
+      value = mentionsOf;
+      description = "mentionsOf vals: collect unique metavariable ids referenced by a list of elaborator values.";
+      signature = "mentionsOf : [ElabVal] -> [Int]";
+    };
+    occurs = api.leaf {
+      value = occurs;
+      description = "occurs id v: true when `v` references metavariable `id`.";
+      signature = "occurs : Int -> ElabVal -> Bool";
+      tests = {
+        "occurs-detects-self" = {
+          expr = occurs 0 (mkVMeta 0 [ (V.eApp V.vTt) ] { ctx = { }; ty = V.vUnit; });
+          expected = true;
+        };
+      };
+    };
+    patternSpine = api.leaf {
+      value = patternSpine;
+      description = "patternSpine spine: true for application spines whose arguments are distinct bound variables.";
+      signature = "patternSpine : Spine -> Bool";
+      tests = {
+        "patternSpine-distinct-vars" = {
+          expr = patternSpine [ (V.eApp (V.vNe 0 [ ])) (V.eApp (V.vNe 1 [ ])) ];
+          expected = true;
+        };
+        "patternSpine-rejects-duplicate" = {
+          expr = patternSpine [ (V.eApp (V.vNe 0 [ ])) (V.eApp (V.vNe 0 [ ])) ];
+          expected = false;
+        };
+      };
+    };
+    levelsVal = api.leaf {
+      value = levelsVal;
+      description = "levelsVal v: collect neutral variable levels referenced by an elaborator value.";
+      signature = "levelsVal : ElabVal -> [Level]";
+    };
+    simplifyConstraint = api.leaf {
+      value = simplifyConstraint;
+      description = "simplifyConstraint c state: locally simplify one constraint by rigid conversion, direct meta solving, occurs-check failure, or postponement.";
+      signature = "simplifyConstraint : Constraint -> ElabState -> { state : ElabState; constraint : Constraint; }";
+      tests = {
+        "simplifyConstraint-direct-meta-solve" = {
+          expr =
+            let
+              m = mkVMeta 0 [ ] { ctx = { }; ty = V.vUnit; };
+              r = simplifyConstraint { tag = "conv"; lhs = m; rhs = V.vTt; type = V.vUnit; } {
+                delta = { };
+                metaOrder = [ ];
+                constraints = [ ];
+                mentions = { };
+                nextMetaId = 0;
+              };
+            in
+            { status = r.constraint.status; solved = r.state.delta."0".tag; };
+          expected = { status = "solved"; solved = "Solved"; };
+        };
+        "simplifyConstraint-occurs-check-fails" = {
+          expr =
+            let
+              m = mkVMeta 0 [ ] { ctx = { }; ty = V.vUnit; };
+              rhs = mkVMeta 0 [ (V.eApp V.vTt) ] { ctx = { }; ty = V.vUnit; };
+              r = simplifyConstraint { tag = "conv"; lhs = m; rhs = rhs; type = V.vUnit; } {
+                delta = { };
+                constraints = [ ];
+                mentions = { };
+              };
+            in
+            r.constraint.status;
+          expected = "failed";
+        };
+        "simplifyConstraint-pattern-identity-solves" = {
+          expr =
+            let
+              ty = V.vPi "_" V.vUnit (V.mkClosure [ ] T.mkUnit);
+              m = mkVMeta 0 [ (V.eApp (V.vNe 0 [ ])) ] { ctx = { }; ty = ty; };
+              r = simplifyConstraint { tag = "conv"; lhs = m; rhs = V.vNe 0 [ ]; type = V.vUnit; } {
+                delta = { };
+                metaOrder = [ ];
+                constraints = [ ];
+                mentions = { };
+              };
+              applied = E.vApp r.state.delta."0".tm V.vTt;
+            in
+            { status = r.constraint.status; tag = applied.tag; };
+          expected = { status = "solved"; tag = "VTt"; };
+        };
+        "simplifyConstraint-pattern-pair-swaps-vars" = {
+          expr =
+            let
+              m = mkVMeta 0 [
+                (V.eApp (V.vNe 0 [ ]))
+                (V.eApp (V.vNe 1 [ ]))
+              ]
+                { ctx = { }; ty = V.vUnit; };
+              rhs = V.vPair (V.vNe 1 [ ]) (V.vNe 0 [ ]);
+              r = simplifyConstraint { tag = "conv"; lhs = m; rhs = rhs; type = V.vUnit; } {
+                delta = { };
+                metaOrder = [ ];
+                constraints = [ ];
+                mentions = { };
+              };
+              applied = E.vApp (E.vApp r.state.delta."0".tm V.vTt) V.vUnit;
+            in
+            { status = r.constraint.status; fst = applied.fst.tag; snd = applied.snd.tag; };
+          expected = { status = "solved"; fst = "VUnit"; snd = "VTt"; };
+        };
+      };
+    };
+    addAndSimplifyConstraint = api.leaf {
+      value = addAndSimplifyConstraint;
+      description = "addAndSimplifyConstraint c state: simplify a constraint, allocate its id, append it to 𝒦, and update mentions.";
+      signature = "addAndSimplifyConstraint : Constraint -> ElabState -> { id : Int; state : ElabState; }";
+    };
+    processActiveConstraints = api.leaf {
+      value = processActiveConstraints;
+      description = "processActiveConstraints state: rerun local simplification for active constraints and preserve non-active constraints.";
+      signature = "processActiveConstraints : ElabState -> ElabState";
+    };
+    sigmaFlatten = api.leaf {
+      value = sigmaFlatten;
+      description = "sigmaFlatten id state: replace an unsolved Sigma-typed meta with a pair of freshly allocated component metas.";
+      signature = "sigmaFlatten : Int -> ElabState -> ElabState";
+      tests = {
+        "sigmaFlatten-solves-sigma-hole" = {
+          expr =
+            let
+              sigma = V.vSigma "_" V.vUnit (V.mkClosure [ ] T.mkUnit);
+              st = sigmaFlatten 0 {
+                delta = { "0" = self.mkHole 0 { ctx = { }; ty = sigma; }; };
+                metaOrder = [ 0 ];
+                constraints = [ ];
+                mentions = { };
+                nextMetaId = 1;
+              };
+            in
+            {
+              solved = st.delta."0".tag;
+              pair = st.delta."0".tm.tag;
+              metas = st.metaOrder;
+            };
+          expected = { solved = "Solved"; pair = "VPair"; metas = [ 0 1 2 ]; };
+        };
+      };
+    };
+  };
+
+}

@@ -4,6 +4,7 @@
 
   settings.global.excludes = [
     "docs/*"
+    "vendor/**"
   ]
   ++ map (line: lib.removePrefix "/" line + lib.optionalString (lib.hasSuffix "/" line) "**") (
     lib.filter (line: line != "") (lib.splitString "\n" (builtins.readFile ./.gitignore))

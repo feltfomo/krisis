@@ -1,0 +1,658 @@
+# Proof Guide
+
+Nix DSL values are concrete at eval time. Every declaration, field, and
+dependency edge is known before anything builds. The nix-effects
+dependent type checker exploits this: it normalizes both sides of an
+equation via NbE, and if they reduce to the same value, `Refl` proves
+them equal. No symbolic reasoning, no induction over unknowns — just
+computation on concrete data, checked through the freer-monad effect
+layer in pure Nix.
+
+This chapter builds proofs incrementally, from `0 + 0 = 0` through
+the J eliminator to verified extraction of plain Nix functions from
+kernel-checked HOAS terms. Every example is runnable. The code comes
+from three files in the repository:
+[`proof-basics.nix`](https://github.com/kleisli-io/nix-effects/blob/main/examples/proof-basics.nix),
+[`equality-proofs.nix`](https://github.com/kleisli-io/nix-effects/blob/main/examples/equality-proofs.nix), and
+[`verified-functions.nix`](https://github.com/kleisli-io/nix-effects/blob/main/examples/verified-functions.nix).
+
+**Prerequisites.** You should know what a function is and what `let`
+bindings do in Nix. Familiarity with the Getting Started chapter helps
+but isn't required. You do not need to know type theory.
+
+## Your first proof
+
+A proof in nix-effects is a term that type-checks against an equality
+type. The simplest equality type is `Eq(Nat, 0+0, 0)` — the claim
+that adding zero to zero produces zero. The proof term is `Refl`, which
+says "both sides are the same." The kernel checks this by normalizing
+`0 + 0`, arriving at `0`, and confirming that `Refl` witnesses `0 = 0`.
+
+```nix
+let
+  H = fx.types.hoas;
+  inherit (H) nat eq zero refl checkHoas;
+
+  # Addition by structural recursion on the first argument
+  add = m: n:
+    H.ind (H.lam "_" nat (_: nat)) n
+      (H.lam "k" nat (_: H.lam "ih" nat (ih: H.succ ih))) m;
+in
+  # Prove: 0 + 0 = 0
+  (checkHoas (eq nat (add zero zero) zero) refl).tag == "refl"
+  # → true
+```
+
+`checkHoas` is the kernel's entry point. It takes a type and a term,
+runs bidirectional type checking with normalization by evaluation, and
+returns a result. If the result's `tag` is `"refl"`, the proof was
+accepted. If it has an `error` field, the kernel rejected it.
+
+The kernel doesn't pattern-match on `0 + 0 = 0` as a special case. It
+evaluates `add(zero, zero)` by running the generated natural eliminator
+behind `H.ind` — the base case fires, returns `n` (which is `zero`),
+and the kernel sees `Eq(Nat, zero, zero)`. `Refl` witnesses any
+`Eq(A, x, x)`, so the proof goes through.
+
+Larger numbers work the same way. The kernel unrolls the recursion:
+
+```nix
+# 3 + 5 = 8
+(checkHoas (eq nat (add (H.natLit 3) (H.natLit 5)) (H.natLit 8)) refl).tag == "refl"
+
+# 10 + 7 = 17
+(checkHoas (eq nat (add (H.natLit 10) (H.natLit 7)) (H.natLit 17)) refl).tag == "refl"
+```
+
+Both reduce to `true`. The kernel normalizes `add(3, 5)` step by
+step — three `succ` peels, then the base case returns `5`, then three
+`succ` wrappers are reapplied — and confirms the result is `8`.
+
+## Dependent witnesses
+
+A computational equality says "these two things are the same." A
+dependent witness says "here is a value, and here is evidence that
+it has a property." The Sigma type `Σ(x:A).P(x)` packages both: a
+value `x` of type `A`, and a proof that `P(x)` holds.
+
+```nix
+let
+  H = fx.types.hoas;
+  inherit (H) nat eq sigma zero pair refl checkHoas;
+in {
+  # "There exists x : Nat such that x = 0" — witnessed by (0, Refl)
+  witness = let
+    ty = sigma "x" nat (x: eq nat x zero);
+    tm = pair zero refl;
+  in (checkHoas ty tm).tag == "pair";
+  # → true
+}
+```
+
+The type `Σ(x:Nat). Eq(Nat, x, 0)` says "a natural number equal to
+zero." The term `(0, Refl)` inhabits it: `0` for the value, `Refl` for
+the proof that `0 = 0`. The kernel checks both components — it
+confirms `0 : Nat` and `Refl : Eq(Nat, 0, 0)`.
+
+Witnesses get more interesting when the property involves computation:
+
+```nix
+# "There exists x such that 3+5 = x" — witnessed by (8, Refl)
+witnessAdd = let
+  add = m: n:
+    H.ind (H.lam "_" nat (_: nat)) n
+      (H.lam "k" nat (_: H.lam "ih" nat (ih: H.succ ih))) m;
+  ty = sigma "x" nat (x: eq nat (add (H.natLit 3) (H.natLit 5)) x);
+  tm = pair (H.natLit 8) refl;
+in (checkHoas ty tm).tag == "pair";
+```
+
+The kernel normalizes `add(3, 5)` to `8`, checks that `8` matches the
+witness value, and accepts the proof. If you claimed the witness was
+`7`, the kernel would reject it — `Refl` can't witness `8 = 7`.
+
+## Eliminators
+
+Eliminators are how you compute over inductive types in type theory.
+Where Nix uses `if`/`else` and list folds, the kernel uses eliminators:
+structured recursion with a *motive* that declares what type the result
+has. The motive is what makes these dependently typed — the return type
+can vary based on the input.
+
+### Booleans
+
+`H.boolElim k motive trueCase falseCase scrutinee` — case analysis on
+a derived boolean. `H.bool` is `μ ⊤ (plus (retI tt) (retI tt)) tt`,
+and `H.boolElim` is defined in terms of `desc-ind` on that
+description (see `src/tc/hoas/combinators.nix`). The user-facing
+behavior is the standard boolean eliminator: with a constant motive
+(return type doesn't depend on the boolean), it's equivalent to an
+if/else.
+
+```nix
+let
+  H = fx.types.hoas;
+  inherit (H) nat bool eq zero refl boolElim checkHoas;
+in {
+  # if true then 42 else 0 = 42
+  trueCase = let
+    result = boolElim 0 (H.lam "_" bool (_: nat)) (H.natLit 42) zero H.true_;
+  in (checkHoas (eq nat result (H.natLit 42)) refl).tag == "refl";
+
+  # if false then 42 else 0 = 0
+  falseCase = let
+    result = boolElim 0 (H.lam "_" bool (_: nat)) (H.natLit 42) zero H.false_;
+  in (checkHoas (eq nat result zero) refl).tag == "refl";
+}
+```
+
+### Natural numbers
+
+`H.ind k motive base step n` — structural recursion over the generated
+natural datatype. The base case handles zero, the step case takes the
+predecessor `k` and the inductive hypothesis `ih` (the result for `k`)
+and produces the result for `S(k)`:
+
+```nix
+let
+  H = fx.types.hoas;
+  inherit (H) nat eq refl checkHoas;
+
+  # double(n): double(0) = 0, double(S(k)) = S(S(double(k)))
+  double = n: H.ind (H.lam "_" nat (_: nat)) H.zero
+    (H.lam "k" nat (_: H.lam "ih" nat (ih: H.succ (H.succ ih)))) n;
+in
+  # double(4) = 8
+  (checkHoas (eq nat (double (H.natLit 4)) (H.natLit 8)) refl).tag == "refl"
+```
+
+The kernel unrolls four steps: `double(4) = S(S(double(3))) = ... = 8`.
+
+### Lists
+
+`H.listElim k elemType motive nilCase consCase list` — structural
+recursion over the generated list datatype. The nil case provides the
+base value, the cons case takes the head, tail, and inductive
+hypothesis:
+
+```nix
+let
+  H = fx.types.hoas;
+  inherit (H) nat eq refl checkHoas;
+
+  list123 = H.cons nat (H.natLit 1) (H.cons nat (H.natLit 2)
+              (H.cons nat (H.natLit 3) (H.nil nat)));
+
+  # sum(xs): fold with addition
+  sumList = xs: H.listElim nat (H.lam "_" (H.listOf nat) (_: nat)) H.zero
+    (H.lam "h" nat (h: H.lam "t" (H.listOf nat) (_:
+      H.lam "ih" nat (ih:
+        H.ind (H.lam "_" nat (_: nat)) ih
+          (H.lam "k" nat (_: H.lam "ih2" nat (ih2: H.succ ih2))) h)))) xs;
+in
+  # sum([1, 2, 3]) = 6
+  (checkHoas (eq nat (sumList list123) (H.natLit 6)) refl).tag == "refl"
+```
+
+### Sums (coproducts)
+
+`H.sumElim k L R motive leftCase rightCase scrutinee` — case analysis
+over the generated sum datatype:
+
+```nix
+let
+  H = fx.types.hoas;
+  inherit (H) nat bool sum eq zero refl checkHoas;
+in {
+  # case Left(5) of { Left n → n; Right _ → 0 } = 5
+  leftCase = let
+    scrut = H.inl nat bool (H.natLit 5);
+    result = H.sumElim nat bool (H.lam "_" (sum nat bool) (_: nat))
+      (H.lam "n" nat (n: n))
+      (H.lam "b" bool (_: zero))
+      scrut;
+  in (checkHoas (eq nat result (H.natLit 5)) refl).tag == "refl";
+}
+```
+
+## The J eliminator
+
+Everything above uses `Refl` on equalities that the kernel verifies
+by computation — normalize both sides, confirm they match. But what if
+you want to reason *about* equalities? Prove that equality is
+symmetric, or that applying a function to equal inputs gives equal
+outputs? That requires the J eliminator, the fundamental proof
+principle for identity types in Martin-Löf type theory [1].
+
+J says: if you can prove something about `x = x` (the reflexive case),
+you can prove it about any `x = y` where the equality is witnessed.
+
+```
+J(A, a, P, pr, b, eq)
+  A  : type
+  a  : left side of the equality
+  P  : λ(y:A). λ(_:Eq(A,a,y)). Type    — the motive
+  pr : P(a, refl)                       — the base case (when y = a)
+  b  : right side
+  eq : Eq(A, a, b)                      — proof that a = b
+  Returns: P(b, eq)
+
+Computation rule: J(A, a, P, pr, a, refl) = pr
+```
+
+When the equality proof is `Refl`, J returns the base case directly.
+The kernel reduces `J(..., refl)` to `pr`, and the proof goes through.
+
+### Congruence
+
+If `x = y`, then `f(x) = f(y)` for any function `f`. This is the
+standard *cong* combinator, derived from J:
+
+```nix
+let
+  H = fx.types.hoas;
+  inherit (H) nat eq u forall refl checkHoas;
+
+  congType =
+    forall "A" (u 0) (a:
+      forall "B" (u 0) (b:
+        forall "f" (forall "_" a (_: b)) (f:
+          forall "x" a (x:
+            forall "y" a (y:
+              forall "_" (eq a x y) (_:
+                eq b (H.app f x) (H.app f y)))))));
+
+  congTerm = H.lam "A" (u 0) (a:
+    H.lam "B" (u 0) (b:
+      H.lam "f" (forall "_" a (_: b)) (f:
+        H.lam "x" a (x:
+          H.lam "y" a (y:
+            H.lam "p" (eq a x y) (p:
+              H.j a x
+                (H.lam "y'" a (y':
+                  H.lam "_" (eq a x y') (_:
+                    eq b (H.app f x) (H.app f y'))))
+                refl y p))))));
+in
+  (checkHoas congType congTerm).tag == "lam"
+```
+
+The derivation: J eliminates the proof `p : Eq(A, x, y)`. The motive
+says "given `y'` equal to `x`, produce `Eq(B, f(x), f(y'))`." In the
+base case, `y' = x`, so the goal is `Eq(B, f(x), f(x))` — which
+`Refl` proves. J then transports this to `Eq(B, f(x), f(y))`.
+
+This generic combinator type-checks with abstract variables `A`, `B`,
+`f`, `x`, `y` — the kernel verifies the reasoning is valid for all
+inputs. On concrete data, J receives `Refl` (since concrete equalities
+reduce by computation), and the kernel simplifies:
+
+```nix
+# Concrete: from add(2,1) = 3, derive succ(add(2,1)) = succ(3)
+congConcrete = let
+  add21 = add (H.natLit 2) (H.succ H.zero);
+  three = H.natLit 3;
+in (checkHoas
+    (eq nat (H.succ add21) (H.succ three))
+    (H.j nat add21
+      (H.lam "y" nat (y:
+        H.lam "_" (eq nat add21 y) (_:
+          eq nat (H.succ add21) (H.succ y))))
+      refl three refl)).tag == "j";
+```
+
+### Symmetry
+
+If `x = y`, then `y = x`. The motive is `λy'.λ_. Eq(A, y', x)` —
+when `y' = x`, the goal is `Eq(A, x, x)`, proved by `Refl`:
+
+```nix
+# sym : Π(A:U₀). Π(x:A). Π(y:A). Eq(A,x,y) → Eq(A,y,x)
+symTerm = H.lam "A" (u 0) (a:
+  H.lam "x" a (x:
+    H.lam "y" a (y:
+      H.lam "p" (eq a x y) (p:
+        H.j a x
+          (H.lam "y'" a (y': H.lam "_" (eq a x y') (_: eq a y' x)))
+          refl y p))));
+```
+
+### Transitivity
+
+If `x = y` and `y = z`, then `x = z`. Fix `p : Eq(A, x, y)`, then
+eliminate `q` with J. The motive is `λz'.λ_. Eq(A, x, z')` — when
+`z' = y`, the goal is `Eq(A, x, y)`, proved by `p`:
+
+```nix
+# trans : Π(A:U₀). Π(x:A). Π(y:A). Π(z:A). Eq(A,x,y) → Eq(A,y,z) → Eq(A,x,z)
+transTerm = H.lam "A" (u 0) (a:
+  H.lam "x" a (x:
+    H.lam "y" a (y:
+      H.lam "z" a (z:
+        H.lam "p" (eq a x y) (p:
+          H.lam "q" (eq a y z) (q:
+            H.j a y
+              (H.lam "z'" a (z': H.lam "_" (eq a y z') (_: eq a x z')))
+              p z q))))));
+```
+
+### Transport
+
+The most general form. If `x = y` and `P(x)` holds, then `P(y)` holds.
+Congruence, symmetry, and transitivity are all special cases.
+
+```nix
+# transport : Π(A:U₀). Π(P:A→U₀). Π(x:A). Π(y:A). Eq(A,x,y) → P(x) → P(y)
+transportTerm = H.lam "A" (u 0) (a:
+  H.lam "P" (forall "_" a (_: u 0)) (bigP:
+    H.lam "x" a (x:
+      H.lam "y" a (y:
+        H.lam "p" (eq a x y) (p:
+          H.lam "px" (H.app bigP x) (px:
+            H.j a x
+              (H.lam "y'" a (y': H.lam "_" (eq a x y') (_: H.app bigP y')))
+              px y p))))));
+```
+
+### Chaining proofs
+
+J applications compose. Here we chain congruence (lift through `succ`)
+with symmetry (reverse the equality) — two J applications, the output
+of the first feeding as the equality proof to the second:
+
+```nix
+# From Eq(Nat, add(2,1), 3):
+#   Step 1 (cong succ): Eq(Nat, S(add(2,1)), S(3))
+#   Step 2 (sym):       Eq(Nat, S(3), S(add(2,1)))
+combinedProof = let
+  add21 = add (H.natLit 2) (H.succ H.zero);
+  three = H.natLit 3;
+  sadd21 = H.succ add21;
+  sthree = H.succ three;
+  # Step 1: cong succ
+  congStep = H.j nat add21
+    (H.lam "y" nat (y: H.lam "_" (eq nat add21 y) (_: eq nat sadd21 (H.succ y))))
+    refl three refl;
+  # Step 2: sym on the cong result
+in (checkHoas (eq nat sthree sadd21)
+    (H.j nat sadd21
+      (H.lam "y" nat (y: H.lam "_" (eq nat sadd21 y) (_: eq nat y sadd21)))
+      refl sthree congStep)).tag == "j";
+```
+
+## Verified extraction
+
+Proofs establish that properties hold. Verified extraction goes
+further: write an implementation in HOAS, the kernel type-checks it
+against a specification, and `v.verify` extracts a callable Nix
+function. The result is an ordinary Nix value — an integer, a boolean,
+a function, a list — but one whose implementation was machine-checked
+before use.
+
+### The simplest case
+
+```nix
+let
+  H = fx.types.hoas;
+  v = fx.types.verified;
+
+  # Kernel-verified successor: Nat → Nat
+  succFn = v.verify (H.forall "x" H.nat (_: H.nat))
+                    (v.fn "x" H.nat (x: H.succ x));
+in
+  succFn 5    # → 6
+```
+
+`v.verify` does three things: elaborates the HOAS into kernel terms,
+type-checks the implementation against the type, and extracts the
+result as a Nix value. The extracted function is plain Nix — no kernel
+overhead at call time.
+
+`v.fn` is a convenience wrapper around `H.lam` that threads the
+extraction metadata. You could write raw `H.lam` instead, but `v.fn`
+handles the plumbing for multi-argument functions and pattern matching.
+
+### Pattern matching
+
+`v.match` builds an `H.ind` with a constant motive. You provide the
+result type, the scrutinee, and branches for `zero` and `succ`:
+
+```nix
+# Verified addition: Nat → Nat → Nat
+addFn = v.verify (H.forall "m" H.nat (_: H.forall "n" H.nat (_: H.nat)))
+  (v.fn "m" H.nat (m: v.fn "n" H.nat (n:
+    v.match H.nat m {
+      zero = n;
+      succ = _k: ih: H.succ ih;
+    })));
+
+addFn 2 3    # → 5
+addFn 0 7    # → 7
+```
+
+The `succ` branch receives two arguments: `k` (the predecessor) and
+`ih` (the inductive hypothesis — the result for `k`). For addition,
+`ih` is `add(k, n)`, so wrapping it with `succ` gives `add(S(k), n)`.
+
+### Boolean and cross-type elimination
+
+`v.if_` elaborates to `H.boolElim` on the derived `H.bool`:
+
+```nix
+# Verified not: Bool → Bool
+notFn = v.verify (H.forall "b" H.bool (_: H.bool))
+  (v.fn "b" H.bool (b:
+    v.if_ H.bool b { then_ = v.false_; else_ = v.true_; }));
+
+notFn true     # → false
+notFn false    # → true
+```
+
+Cross-type elimination — scrutinize one type, return another — works
+by specifying a different result type:
+
+```nix
+# Verified isZero: Nat → Bool
+isZeroFn = v.verify (H.forall "n" H.nat (_: H.bool))
+  (v.fn "n" H.nat (n:
+    v.match H.bool n {
+      zero = v.true_;
+      succ = _k: _ih: v.false_;
+    }));
+
+isZeroFn 0    # → true
+isZeroFn 5    # → false
+```
+
+### List operations
+
+`v.map`, `v.filter`, and `v.fold` are verified list combinators. Each
+takes HOAS terms, not Nix functions — the kernel verifies the entire
+pipeline:
+
+```nix
+# Composed pipeline: filter zeros, then sum
+# Input: [0, 3, 0, 2, 1] → Filter: [3, 2, 1] → Sum: 6
+composedResult = let
+  input = H.cons H.nat (v.nat 0) (H.cons H.nat (v.nat 3)
+    (H.cons H.nat (v.nat 0) (H.cons H.nat (v.nat 2)
+      (H.cons H.nat (v.nat 1) (H.nil H.nat)))));
+  nonZero = v.fn "n" H.nat (n:
+    v.match H.bool n {
+      zero = v.false_;
+      succ = _k: _ih: v.true_;
+    });
+  addCombine = v.fn "a" H.nat (a: v.fn "acc" H.nat (acc:
+    v.match H.nat a {
+      zero = acc;
+      succ = _k: ih: H.succ ih;
+    }));
+in v.verify H.nat (v.fold H.nat H.nat (v.nat 0) addCombine
+                     (v.filter H.nat nonZero input));
+# → 6
+```
+
+The kernel verifies the filter predicate (`Nat → Bool`), the fold
+combinator (`Nat → Nat → Nat`), and their composition before extracting
+the result. A type error in any component — say, returning a `Nat`
+where the filter expects a `Bool` — fails at `nix eval`, not at runtime.
+
+### Aspect declarations and string operations
+
+The kernel supports record types (elaborated as nested Sigma) and
+string equality (`strEq` is a kernel primitive). Together they verify
+functions over the same aspect declarations introduced earlier:
+
+```nix
+let
+  H = fx.types.hoas;
+  v = fx.types.verified;
+
+  AspectDecl = H.record [
+    { name = "name";     type = H.string; }
+    { name = "target";   type = H.string; }
+    { name = "requires"; type = H.listOf H.string; }
+  ];
+
+  targets =
+    H.cons H.string (v.str "module")
+      (H.cons H.string (v.str "file")
+        (H.cons H.string (v.str "package")
+          (H.cons H.string (v.str "check") (H.nil H.string))));
+
+  validateAspect = v.verify (H.forall "a" AspectDecl (_: H.bool))
+    (v.fn "a" AspectDecl (a:
+      v.strElem (v.field AspectDecl "target" a) targets));
+in {
+  ok = validateAspect {
+    name = "workspace-shell";
+    target = "module";
+    requires = [ "toolchain" ];
+  };   # → true
+
+  bad = validateAspect {
+    name = "workspace-aspect";
+    target = "fleet";
+    requires = [ ];
+  };   # → false
+}
+```
+
+`v.field` desugars to the right chain of `fst`/`snd` projections for
+the field's position in the Sigma chain. `v.strEq` reduces in the
+kernel via the `StrEq` primitive — it compares string literals during
+normalization, producing `true` or `false` as kernel values. `v.strElem`
+folds that primitive over a generated list of allowed target classes.
+
+## What the kernel can and cannot prove
+
+The nix-effects kernel implements Martin-Löf type theory with
+universes, dependent functions, dependent pairs, identity types,
+natural numbers, lists, sums, unit, the empty type, an indexed-
+description family (`Desc I`, `μ`, `desc-ind`), and seven axiomatized
+Nix primitives (String, Int, Float, Attrs, Path, Function, Any).
+Booleans are derived — `H.bool` as `μ ⊤ (plus (retI tt) (retI tt)) tt`
+with eliminator `H.boolElim` via `desc-ind`. `Empty` is a kernel
+primitive (the initial-object dual of `Unit`) with eliminator
+`H.absurd : Π(P:U(k)). Empty → P`.
+The kernel can prove any property that reduces to a comparison of
+normal forms.
+
+**It can prove:**
+
+- Equalities between computed values: `add(3, 5) = 8`,
+  `length([1,2,3]) = 3`, `append([1,2], [3]) = [1,2,3]`
+- Properties of concrete data: "this declaration field is in the
+  allowed set," "this target class is valid," "these two strings match"
+- Generic combinators: `cong`, `sym`, `trans`, and `transport`
+  type-check with abstract variables
+- Verified function extraction: any function expressible with the
+  kernel's eliminators can be verified and extracted
+
+**It cannot prove automatically by conversion:**
+
+- **Symbolic induction by `refl`.** `forall n, n + 0 = n` requires
+  induction over an abstract variable. The generated natural eliminator
+  reduces on concrete generated constructor values, so `3 + 0 = 3` and
+  `100 + 0 = 100` are witnessed by `refl`. For a bound `n`, `n + 0`
+  stays neutral because addition recurses on its first argument; it is
+  not definitionally equal to `n`. The universal statement is still
+  provable as propositional equality with an explicit induction proof.
+  See `examples/category-theory/arithmetic.nix` for `addRightZero`.
+
+- **Properties of Nix builtins.** The kernel axiomatizes `String`,
+  `Int`, `Float`, etc. as opaque types. The kernel has `strEq`
+  (equality) and `strLen` (length) for strings, plus list membership,
+  but operations beyond these — `builtins.substring`, `builtins.match`,
+  concatenation — are not kernel functions, so their properties are not
+  provable.
+
+- **Eta-expansion.** The kernel does not identify `f` with `λx.f(x)`.
+  Functions that are extensionally equal but intensionally different are
+  not convertible.
+
+- **User-defined recursive types.** The kernel has an indexed-description
+  family (`Desc I` / `μ` / `desc-ind`) that the macro layer uses to
+  build public inductives such as `Nat`, `List`, `Sum`, `Bool`, `Fin`,
+  `Vec`, and `Eq`-as-description. Arbitrary user-defined inductive
+  families (binary trees, red-black trees, etc.) use the same
+  description-macro layer; they are not written directly against
+  primitive per-type kernel nodes.
+
+  The macro layer exposes four user-facing entry points for defining
+  inductive types. `H.datatype name cons` compiles a monomorphic,
+  ⊤-indexed datatype from a list of `H.con name fields` specs
+  (`H.field`, `H.fieldD`, `H.recField`, `H.piField`, `H.piFieldD` for
+  the field shapes). `H.datatypeP name params mkCtors` adds a
+  parameter layer, threading each parameter through an outer Π
+  binder. `H.datatypeI name I consList` adds an arbitrary index type
+  `I : U`; constructors use `H.conI name fields targetIdx` to specify
+  their target index as a function of earlier field markers, and
+  recursive fields at non-default indices use `H.recFieldAt name
+  idxFn` (plain `H.recField` is rejected at `I ≠ ⊤`). `H.datatypePI
+  name params indexFn mkCtors` combines parameters and indexing — the
+  index type itself may depend on parameters, which is what
+  `Eq A a : A → U` requires. Each macro returns a record exposing
+  `.D : Desc I`, `.T : Π(i:I). U` (or `μ ⊤ D tt` at the ⊤-sugar
+  path), per-constructor fields, and `.elim` built on `desc-ind`. The
+  prelude's `FinDT`, `VecDT`, and `EqDT` are the canonical indexed
+  instances and drive the surface `H.fin` / `H.vec` / `H.eqDT`
+  bindings as thin forwarders.
+
+For Nix, the "concrete data" restriction is less of a limitation than
+it sounds. Nix evaluates declarations completely before building —
+every aspect, generated module, dependency edge, and package attribute
+is a concrete value at eval time. The kernel verifies all computable
+properties of that concrete data. What it gives up is proving things
+about *all possible* declarations generically. In practice, you prove
+properties of the specific graph being built, which is the one that
+matters.
+
+## Quick reference
+
+| Pattern | Type | Proof term |
+|---------|------|------------|
+| Computational equality | `Eq(A, x, y)` where `x`, `y` normalize to same value | `Refl` |
+| Dependent witness | `Σ(x:A). P(x)` | `(value, proof)` |
+| Case analysis (bool, derived) | `H.boolElim k motive true_case false_case b` | Result of elimination |
+| Structural recursion (nat) | `H.ind k motive base step n` | Result of elimination |
+| List recursion | `H.listElim k elem motive nil_case cons_case xs` | Result of elimination |
+| Sum dispatch | `H.sumElim k L R motive left_case right_case s` | Result of elimination |
+| Congruence | `Eq(A,x,y) → Eq(B, f(x), f(y))` | `J(A, x, λy'.λ_. Eq(B,f(x),f(y')), Refl, y, p)` |
+| Symmetry | `Eq(A,x,y) → Eq(A,y,x)` | `J(A, x, λy'.λ_. Eq(A,y',x), Refl, y, p)` |
+| Transitivity | `Eq(A,x,y) → Eq(A,y,z) → Eq(A,x,z)` | `J(A, y, λz'.λ_. Eq(A,x,z'), p, z, q)` |
+| Transport | `Eq(A,x,y) → P(x) → P(y)` | `J(A, x, λy'.λ_. P(y'), px, y, p)` |
+| Ex falso (derived `H.void = Fin 0`) | `H.void → A` | `H.absurd A x` (routes through `absurdFin0`) |
+| Verified function | `v.verify type impl` | Extracted Nix function |
+
+## References
+
+1. Martin-Löf, P. (1984). *Intuitionistic Type Theory*. Bibliopolis.
+
+2. The Univalent Foundations Program (2013). *Homotopy Type Theory:
+   Univalent Foundations of Mathematics*. Institute for Advanced Study.
+   [[pdf](https://homotopytypetheory.org/book/)]
+
+3. Norell, U. (2007). *Towards a practical programming language based
+   on dependent type theory*. PhD thesis, Chalmers.
+   [[pdf](https://www.cse.chalmers.se/~ulfn/papers/thesis.pdf)]

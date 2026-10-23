@@ -37,15 +37,34 @@ second full-suite leaf.
 
 The runner snapshots tracked and non-ignored untracked files before staging
 and retains SHA-256 manifests in `.runtime/gate`. `.gitignore` owns scratch
-exclusions; `nix/source.nix` consumes the same literal root paths for consumer
-sources. Formatter/static scans use the admitted candidate files or their
-snapshot. Runtime and devenv state stay outside those inputs.
+exclusions; `nix/source.nix` consumes the same literal root paths for check and
+qualification sources. The public constructor imports `src` directly, so library
+demand doesn't materialize the filtered repository root. Formatter/static scans
+use the admitted candidate files or their snapshot. They exclude `vendor/` from
+linting and rewriting while retaining it
+in snapshots. Runtime and devenv state stay outside those inputs.
 
 The flake check uses a direct nix-unit expression with supplied sources, a
 private local evaluation store, empty substituters, disabled fallback, and
 the Nix build sandbox. It doesn't assign or export HOME. The outer gate also
 requests offline operation and disables remote builders. Missing local
 dependencies fail instead of fetching during the gate.
+
+## Corrected dependency source
+
+`vendor/nix-effects` is the complete pinned upstream tree with the maintained
+patch applied. Keep its legal notices and bytes intact. Record updates in
+`vendor/nix-effects-provenance.json`, including the corrected NAR hash from
+`nix hash path vendor/nix-effects`. `nix/qualified-source.nix` supplies this path
+to the public export and every internal import.
+
+Run `krisis-test source qualification.source qualification.types` for source
+import and corrected-validation regressions. Build
+`path:.#checks.x86_64-linux.qualified-source` to compare the complete snapshot
+against the locked upstream plus patch. This check rejects executable-bit drift
+as well as content and file-kind changes. It also produces the existing
+`qualified-nix-effects` package. Library import doesn't demand that build.
+The full gate includes this parity check for the native system.
 
 ## CI preparation and verification limits
 
