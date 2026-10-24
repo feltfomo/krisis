@@ -4,12 +4,23 @@ let
   T = k.validation.types;
   poison = throw "unused location or position payload";
   checkAt =
-    location: value:
+    location:
     k.validation.check {
       type = T.Int;
       code = "boundary";
       inherit location;
-    } value;
+    };
+  opaqueCheck = k.validation.check {
+    type = T.Any;
+    code = "opaque";
+    location = poison;
+  };
+  lazyLocationCheck = checkAt {
+    label = poison;
+    source = poison;
+    range = poison;
+    path = poison;
+  };
   run = k.report.run { };
   failureAt = location: run (checkAt location false);
   projectAt = location: k.render.project (builtins.head (failureAt location).diagnostics);
@@ -117,6 +128,95 @@ let
 in
 {
   inherit invalidTests;
+  test-unused-check-configuration = {
+    expr = map (configuration: builtins.isFunction (k.validation.check configuration)) [
+      {
+        type = poison;
+        code = poison;
+        location = poison;
+      }
+      {
+        type = fx.types.Int;
+        code = "";
+        location = poison;
+      }
+      {
+        type = T.Int;
+        code = "";
+        location = poison;
+      }
+    ];
+    expected = [
+      true
+      true
+      true
+    ];
+  };
+  test-unsupported-type-before-code = {
+    expr =
+      (run (
+        k.validation.check {
+          type = fx.types.Int;
+          code = "";
+          location = poison;
+        } poison
+      )).summary.total;
+    expectedError = {
+      type = "ThrownError";
+      msg = "krisis: unsupported validation type; use validation.types";
+    };
+  };
+  test-reused-successful-location-laziness = {
+    expr = map (value: (run (lazyLocationCheck value)).outcome._con) [
+      1
+      2
+    ];
+    expected = [
+      "Success"
+      "Success"
+    ];
+  };
+  test-reused-opaque-checked-outcome-transport = {
+    expr =
+      let
+        report = run (
+          fx.bind
+            (k.report.emit {
+              code = "notice";
+              severity = "warning";
+              message = poison;
+              primary = poison;
+              context = poison;
+            })
+            (
+              _:
+              k.validation.all [
+                (opaqueCheck poison)
+                (opaqueCheck {
+                  index = 1;
+                  payload = poison;
+                })
+              ]
+            )
+        );
+        checked = fx.state.forceThunk report.outcome.value;
+        values = fx.state.forceThunk checked.value;
+      in
+      {
+        outcome = report.outcome._con;
+        checked = checked._con;
+        total = report.summary.total;
+        length = builtins.length values;
+        inherit (builtins.elemAt values 1) index;
+      };
+    expected = {
+      outcome = "Success";
+      checked = "Valid";
+      total = 1;
+      length = 2;
+      index = 1;
+    };
+  };
   test-valid-throwing-location = {
     expr = (run (checkAt poison 1)).outcome._con;
     expected = "Success";

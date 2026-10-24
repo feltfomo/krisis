@@ -466,10 +466,15 @@ nullable descent adds no path segment. Invalid outer shapes don't descend.
 
 `k.validation.check { type; code; location ? null; } value -> Computation (Checked a)`
 
-Requires an admitted type and nonempty diagnostic code. Checks control names,
-type admission, and code at entry. Each upstream `typeCheck` event is authoritative
-failure evidence; the adapter retains `deriveBounce` and never treats resumed
-placeholders as valid values. Ordinary rejection emits error diagnostics and returns
+Requires an admitted type and nonempty diagnostic code. Checks control names when
+the configuration is applied, then type admission before code when the value
+application is demanded. Bind the configured partial application once to reuse its
+lazy configuration checks across values. Constructing that function leaves type,
+code and location unevaluated. Every value application runs validation and the
+required predicates with fresh scoped failure state.
+
+Each upstream `typeCheck` event is authoritative failure evidence; the adapter
+retains `deriveBounce` and never treats resumed placeholders as valid values. Ordinary rejection emits error diagnostics and returns
 Invalid. Acceptance returns Valid containing the original value in a thunk.
 
 Location is optional deferred [location metadata](#locations-and-ranges). It isn't

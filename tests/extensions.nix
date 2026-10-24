@@ -132,6 +132,53 @@ let
           message = "blocking";
         }) (_: fx.pure { payload = poison; })
       );
+  sharedCheck = k.validation.check {
+    type = positive;
+    code = "shared";
+    location = {
+      label = "service";
+      path = [ { field = "ports"; } ];
+    };
+  };
+  sharedPredicateCheck = k.validation.check {
+    type = T.refined "Conditional" T.Int (
+      n: if n == 2 then throw "configured predicate exception" else n > 0
+    );
+    code = "shared-predicate";
+  };
+  validationProjection = report: {
+    outcome = report.outcome._con;
+    diagnostics = map (item: k.render.project item // { inherit (item) context; }) report.diagnostics;
+  };
+  sharedNegative = {
+    severity = "error";
+    code = "shared";
+    message = "$.ports: predicate-failed; expected Positive; got int";
+    primary = {
+      label = "service";
+      source = null;
+      range = null;
+      path = [ { field = "ports"; } ];
+    };
+    related = [ ];
+    notes = [ ];
+    help = null;
+    context.validation = {
+      path = [ ];
+      reason = "predicate-failed";
+      expected = "Positive";
+      actual = "int";
+    };
+  };
+  sharedWrongShape = sharedNegative // {
+    message = "$.ports: shape-mismatch; expected Int; got bool";
+    context.validation = {
+      path = [ ];
+      reason = "shape-mismatch";
+      expected = "Int";
+      actual = "bool";
+    };
+  };
   basic = import ../examples/basic.nix { inherit lib fx; };
 in
 {
@@ -487,6 +534,90 @@ in
       "_con"
       "value"
     ];
+  };
+  test-reused-checker-state-and-diagnostics = {
+    expr = map (value: validationProjection (run (sharedCheck value))) [
+      (-1)
+      1
+      false
+      2
+      (-2)
+    ];
+    expected = [
+      {
+        outcome = "Failure";
+        diagnostics = [ sharedNegative ];
+      }
+      {
+        outcome = "Success";
+        diagnostics = [ ];
+      }
+      {
+        outcome = "Failure";
+        diagnostics = [ sharedWrongShape ];
+      }
+      {
+        outcome = "Success";
+        diagnostics = [ ];
+      }
+      {
+        outcome = "Failure";
+        diagnostics = [ sharedNegative ];
+      }
+    ];
+  };
+  test-reused-independent-dependent-suppression = {
+    expr = validationProjection (
+      run (
+        k.validation.andThen (_: poison) (
+          k.validation.all (
+            map sharedCheck [
+              (-1)
+              false
+              1
+            ]
+          )
+        )
+      )
+    );
+    expected = {
+      outcome = "Failure";
+      diagnostics = [
+        sharedNegative
+        sharedWrongShape
+      ];
+    };
+  };
+  test-reused-per-value-predicate = {
+    expr = map (value: (run (sharedPredicateCheck value)).outcome._con) [
+      (-1)
+      1
+      0
+      3
+    ];
+    expected = [
+      "Failure"
+      "Success"
+      "Failure"
+      "Success"
+    ];
+  };
+  test-reused-thrown-input = {
+    expr = builtins.seq (run (sharedCheck 1)).outcome._con (run (
+      sharedCheck (throw "configured input exception")
+    )).summary.total;
+    expectedError = {
+      type = "ThrownError";
+      msg = "configured input exception";
+    };
+  };
+  test-reused-thrown-predicate = {
+    expr = builtins.seq (run (sharedPredicateCheck 1)).outcome._con (run (sharedPredicateCheck 2))
+    .summary.total;
+    expectedError = {
+      type = "ThrownError";
+      msg = "configured predicate exception";
+    };
   };
   test-independent = {
     expr =

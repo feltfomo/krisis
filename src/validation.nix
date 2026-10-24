@@ -80,7 +80,6 @@ let
       code,
       location ? null,
     }:
-    value:
     let
       upstream = require type;
       template = diagnostic.make {
@@ -88,6 +87,9 @@ let
         message = "";
       };
       checkedLocation = if location == null then null else diagnostic.location location;
+    in
+    value:
+    let
       checked =
         fx.effects.scope.runWith
           {

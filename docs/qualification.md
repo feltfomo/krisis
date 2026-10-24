@@ -147,10 +147,19 @@ reader updates aren't restoring scopes.
 Unknown options fail at construction. Deferred checks execute when the
 corresponding projection is requested. A `validation.check` location is checked
 when a requested failure diagnostic uses it. Successful validation and collected
-summaries don't inspect unused locations. Type/code checks and unknown control
-options remain immediate. Preserve callback exceptions with `builtins.addErrorContext`
-around the expression actually forced. Catch-all exception conversion isn't
-supported.
+summaries don't inspect unused locations. Type admission runs before diagnostic code validation
+when a value application is demanded. An unused configured checker leaves type,
+code and location lazy.
+
+Bind `validation.check { type; code; location; }` once to share its lazy type
+admission, diagnostic template and location preparation across values. Each value
+still runs upstream validation with fresh scoped failure state and evaluates the
+required predicates. Inputs and results aren't cached. Location preparation stays
+deferred until a requested failure projection uses it. Thunk transport and
+independent/dependent validation keep the same forcing boundaries.
+
+Preserve callback exceptions with `builtins.addErrorContext` around the expression
+actually forced. Catch-all exception conversion isn't supported.
 
 ## Terminal presentation and module boundary
 
